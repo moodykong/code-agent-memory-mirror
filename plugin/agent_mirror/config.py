@@ -10,7 +10,7 @@ import json
 import os
 
 from agent_mirror import DEFAULT_REF, STORE_SCHEMA, TOOL_REPO
-from agent_mirror.platforms import Platform
+from agent_mirror.platforms import Platform, activate
 from agent_mirror.runtime import AGENT_NAMES
 from agent_mirror.util import err, expand, norm, tilde, warn, within, write_text
 
@@ -172,6 +172,7 @@ class Context:
 
     def __init__(self, store_flag=None, plat=None):
         self.plat = plat or Platform()
+        activate(self.plat)
         self.store_flag = store_flag
         self._config = None
         self._store = None

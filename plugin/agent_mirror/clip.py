@@ -16,14 +16,16 @@ import subprocess
 import sys
 
 from agent_mirror.envfile import VALID_NAME
-from agent_mirror.platforms import normalize_platform
-from agent_mirror.util import err, out, short
+from agent_mirror.platforms import SANDBOX_EXIT, current, normalize_platform
+from agent_mirror.util import err, expand, out, short
 
 PS_READ = "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; Get-Clipboard -Raw"
 # Copy through PowerShell reading UTF-8 from stdin. clip.exe needs UTF-16 with a byte order mark for
 # non-ASCII text and then leaves that mark on the clipboard as an invisible first character, which
 # would corrupt the first pasted line (a host name, the first line of a script).
-PS_WRITE = "[Console]::InputEncoding=[System.Text.Encoding]::UTF8; $t=[Console]::In.ReadToEnd(); Set-Clipboard -Value $t"
+PS_WRITE = (
+    "[Console]::InputEncoding=[System.Text.Encoding]::UTF8; $t=[Console]::In.ReadToEnd(); Set-Clipboard -Value $t"
+)
 
 
 def is_wsl(read_version=None):
@@ -136,13 +138,18 @@ def cmd_clip(args, ctx):
     if b is None:
         err(NO_BACKEND)
         return 3
+    for argv in (b["copy"], b["paste"], b["clear"]):
+        blocked = current().tool_blocked(argv[0]) if argv else None
+        if blocked:
+            err(blocked)
+            return SANDBOX_EXIT
     action = args.action
     try:
         if action == "copy":
             if not args.file:
                 err("clip copy needs a FILE")
                 return 2
-            with open(os.path.expanduser(args.file), encoding="utf-8") as fh:
+            with open(expand(args.file), encoding="utf-8") as fh:
                 text = fh.read()
             rc, stderr = run_copy(b, text)
             if rc != 0:

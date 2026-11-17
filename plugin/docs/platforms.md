@@ -1,5 +1,10 @@
 # Platforms
 
+> **WARNING: run the tests only with the sandbox guard.** An early test run on native Windows isolated
+> HOME while the program read USERPROFILE and APPDATA there, so it changed the real user profile; the
+> guard below (`AGENT_MIRROR_HOME` plus `AGENT_MIRROR_TEST_SANDBOX`, see CONTRIBUTING.md) now makes that
+> impossible, and the test suite refuses to start without it.
+
 agent-mirror is plain Python 3.8+ with the standard library only. It never runs a shell string:
 every program it starts gets a list of arguments, and every path goes through `os.path` or `pathlib`.
 Everything that differs between operating systems lives in one module,
@@ -10,18 +15,46 @@ Both can be unit-tested on any OS by passing a platform name and an environment 
 
 | | Linux (including WSL 2) | macOS | Windows (native) |
 | --- | --- | --- | --- |
-| Test suite | runs and passes (Python 3.9 and 3.10) | UNVERIFIED | UNVERIFIED |
-| Folder mapping (homes, config, cache) | verified | unit-tested only | Claude home verified; the rest unit-tested only |
+| Test suite | runs and passes (Python 3.9 and 3.10) | UNVERIFIED | runs and passes natively (Python 3.11, Windows 11), under the sandbox guard; one POSIX-shell test skipped |
+| Folder mapping (homes, config, cache) | verified | unit-tested only | verified under `AGENT_MIRROR_HOME`; the real-profile mapping (USERPROFILE, APPDATA) unit-tested only; Claude home verified |
 | Claude memory folder name (slug) | verified | UNVERIFIED | verified (see below) |
-| Links | symlinks, verified | symlinks, UNVERIFIED | symlink, junction or managed copy, UNVERIFIED |
-| Scheduler (`timer`) | systemd user timer, file content unit-tested, enabling UNVERIFIED in tests | launchd, content unit-tested only | schtasks, command unit-tested only |
-| Hook commands | verified format | UNVERIFIED | UNVERIFIED |
-| Launcher | `plugin/bin/agent-mirror` | same file | `plugin/bin/agent-mirror.cmd` |
+| Links | symlinks, verified | symlinks, UNVERIFIED | symlinks verified (Developer Mode on); real junctions verified by test; managed copies verified with a simulated symlink failure only |
+| Scheduler (`timer`) | systemd user timer, file content unit-tested, enabling UNVERIFIED in tests | launchd, content unit-tested only | schtasks dry-run command verified by test; enabling UNVERIFIED |
+| Hook commands | verified format | UNVERIFIED | written and recognised by test; UNVERIFIED that Claude Code on Windows runs them |
+| Launcher | `plugin/bin/agent-mirror` | same file | `plugin/bin/agent-mirror.cmd` (tests run the Python launcher directly) |
+| Clipboard (`clip`) | fake tools only | fake tools only | fake tools only (real clipboards are never touched by tests) |
 
-"Verified" means it ran on a Linux machine (WSL 2, Ubuntu), except for the Windows facts listed under
-"Verified on Windows", which were read from the Claude home of a real Windows 11 machine. agent-mirror
-itself has not run on a real Mac or a real Windows machine yet. Each assumption below that is marked
-UNVERIFIED should be checked there before anyone relies on it.
+"Verified" means the test suite exercised it on Linux (WSL 2, Ubuntu) or natively on Windows 11 with
+Python 3.11, inside the test sandbox, or (for the Claude home and folder names) that it was read from the
+Claude home of a real Windows 11 machine. Nothing has run on a real Mac. Each assumption below that is
+marked UNVERIFIED should be checked before anyone relies on it.
+
+## AGENT_MIRROR_HOME and the test sandbox
+
+One module, `plugin/agent_mirror/platforms.py`, turns the environment into every home-like location: the
+user home, the Claude and Codex homes, the shared skills folder, the user config folder, the cache, the
+backups folder, the systemd user folder, the LaunchAgents folder and the temp folder used for staging.
+Nothing else in the program reads HOME, USERPROFILE, APPDATA, LOCALAPPDATA or XDG_* or calls
+`os.path.expanduser`. `agent-mirror debug paths` prints every resolved location as JSON.
+
+- `AGENT_MIRROR_HOME=<dir>` replaces the user home on every platform. Every location is derived from it,
+  and the config is `<dir>/.config/agent-mirror/config.json` on Linux, macOS and Windows alike. HOME,
+  USERPROFILE, APPDATA, XDG_CONFIG_HOME, CLAUDE_CONFIG_DIR, CODEX_HOME and TEMP/TMP/TMPDIR are ignored
+  unless they point inside `<dir>`. Useful for tests, and for keeping a second, separate setup.
+- `AGENT_MIRROR_TEST_SANDBOX=<dir>` is a tripwire. Before any command does anything, every location is
+  resolved and compared with `<dir>` (real paths, case-insensitively on Windows); if one is outside, the
+  command exits with code 97 and changes nothing. In that mode the program also never starts a real
+  scheduler (systemctl, launchctl, schtasks) or clipboard tool (clip, PowerShell, pbcopy, pbpaste,
+  wl-copy, wl-paste, xclip, xsel) unless the program found on PATH is itself inside `<dir>`.
+
+## Secret files on Windows
+
+Windows ignores the 0600 permission bits. Where agent-mirror writes or reads a secret file
+(`cloud secrets --out`, `box rclone-env --out`, the `local-file` recipe), "private" means owner-only
+(0600) on Linux and macOS, and **inside the user profile** on Windows, whose own permissions keep other
+accounts out. The messages say which: a file written outside the profile on Windows is reported as
+readable by other accounts, a `local-file` source outside the profile becomes "needs you: move it inside
+your user profile", and `--replace` refuses a file outside the profile.
 
 ## Verified on Windows (Windows 11, read from a real Claude home)
 
@@ -33,7 +66,24 @@ UNVERIFIED should be checked there before anyone relies on it.
 - The drive letter keeps the case it has in the path (upper case in the paths Windows reports).
 
 agent-mirror's slug code (`claude_slug` in `platforms.py`) applies exactly this rule, and the tests cover
-these cases. Everything else about Windows below is still UNVERIFIED.
+these cases.
+
+Verified by the test suite running natively on Windows 11 (Python 3.11), inside the sandbox:
+
+- install, uninstall and the backups with real symlinks (this machine allows them), real directory
+  junctions (`mklink /J`: made, detected, read and removed), and the junction or managed-copy fallback
+  when a symlink fails (simulated failure);
+- init-store create and adopt, and the refusal of a store inside a project repo, with case-insensitive
+  path comparisons;
+- hooks install and uninstall in Claude's settings (quoted, forward-slash launcher path to
+  `agent-mirror.cmd`), the memory-write hook, sync and the inbox flow with Git for Windows;
+- programs found as `.cmd` files through PATH (`az.cmd`, `rclone.cmd` fakes), run with argument lists;
+- archive mode with the Windows `tar` (bsdtar) and Python's safe extraction; forward slashes in tables of
+  contents; rendered shell scripts written with LF line endings;
+- multi-repo discovery, cloud render, runbooks, cloud secrets and the timer dry run (schtasks).
+
+Everything else about Windows below is still UNVERIFIED, in particular how Claude Code on Windows runs hook
+commands, enabling a scheduled task, and the real clipboard tools.
 
 ## Folders
 
@@ -46,6 +96,7 @@ these cases. Everything else about Windows below is still UNVERIFIED.
 | agent-mirror config | `${XDG_CONFIG_HOME:-~/.config}/agent-mirror/config.json` | `%APPDATA%\agent-mirror\config.json` |
 | hook log | Linux `${XDG_CACHE_HOME:-~/.cache}/agent-mirror/sync.log`, macOS `~/Library/Caches/agent-mirror/sync.log` | `%LOCALAPPDATA%\agent-mirror\sync.log` |
 | backups | `~/.agent-mirror-backups/<timestamp>/` | `%USERPROFILE%\.agent-mirror-backups\<timestamp>\` |
+| with `AGENT_MIRROR_HOME` set | everything under it; config `<dir>/.config/agent-mirror` | the same, on Windows too |
 
 UNVERIFIED (macOS): Claude Code and Codex use `~/.claude` and `~/.codex` there too.
 UNVERIFIED (Windows): Codex uses `%USERPROFILE%\.codex` and reads `AGENTS.md` and `~/.agents/skills`
@@ -65,8 +116,9 @@ from the same places as on Linux. (Claude's `%USERPROFILE%\.claude` is verified,
     `uninstall` removes a managed copy only when it still matches the store copy.
 - `install` prints which method it used for each link, and the manifest records it.
 
-UNVERIFIED (Windows): junction creation through `cmd /c mklink /J`, junction detection
-(`os.path.isjunction` on Python 3.12+, reparse tags before that), removal of junctions with `os.rmdir`,
+Verified by test on Windows 11 (Python 3.11): junction creation through `cmd /c mklink /J`, junction
+detection (reparse tags on Python 3.11), reading the target (without the `\\?\` prefix Windows adds) and
+removal with `os.rmdir`. UNVERIFIED: junction detection through `os.path.isjunction` on Python 3.12+,
 and Claude Code following a junction for its memory folder.
 
 ## The Claude memory folder
@@ -116,7 +168,8 @@ anything.
 ## Running programs
 
 - On Windows, programs are found through `PATH` with their `.exe`, `.cmd` or `.bat` suffix
-  (`az` is `az.cmd`), using `shutil.which`.
+  (`az` is `az.cmd`), using `shutil.which`, and started with an argument list (verified by test with
+  `.cmd` fakes for az and rclone).
 - Transfers (`az`, `rclone`) run in their own process group so a timeout also stops their children
   (azcopy under az): `killpg` on Linux and macOS, `taskkill /T` on Windows (UNVERIFIED).
 - The sync lock checks whether the process holding it is alive. On Windows this uses

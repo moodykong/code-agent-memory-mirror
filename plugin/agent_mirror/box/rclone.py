@@ -12,7 +12,6 @@ the far side is deleted by default.
 import json
 import os
 import shutil
-import tempfile
 import time
 
 from agent_mirror.box import archive
@@ -21,7 +20,8 @@ from agent_mirror.box.local import FetchRecord, disk_guard
 from agent_mirror.box.sides import RcloneSide
 from agent_mirror.box.rules import folder_files
 from agent_mirror.runtime import CLOUD_RUNTIMES
-from agent_mirror.util import err, out, short, show_cmd, utc_stamp, warn
+from agent_mirror.platforms import current
+from agent_mirror.util import err, local_path, norm, out, short, show_cmd, utc_stamp, warn, within
 
 RCLONE_MISSING = "rclone is not installed or not on PATH; the rclone box needs it (https://rclone.org/install/)"
 ENV_FILE_FILTERS = ["- .env", "- *.env"]
@@ -67,7 +67,7 @@ def local_folders(s):
     root = os.path.realpath(s["project_path"])
     for folder in (mount_dir(s), receive_dir(s)):
         real = os.path.realpath(folder)
-        if real.startswith(root + os.sep):
+        if within(real, root) and norm(real) != norm(root):
             found.append("/%s/**" % os.path.relpath(real, root).replace(os.sep, "/"))
     found += ["/%s/**" % g for g in s.get("archives") or []]
     return found
@@ -199,7 +199,7 @@ def index(args, s, runtime):
 def fetch(args, s, runtime, rel):
     cloud = runtime in CLOUD_RUNTIMES
     project_path = s["project_path"]
-    dest = os.path.join(project_path, rel)
+    dest = local_path(project_path, rel)
     if not cloud and os.path.isfile(dest):
         out("%s already exists locally; fetch never overwrites on a %s runtime, skipped" % (dest, runtime))
         return 0
@@ -267,7 +267,7 @@ def fetch(args, s, runtime, rel):
 
 
 def send(args, s, runtime, rel):
-    src = os.path.join(s["project_path"], rel)
+    src = local_path(s["project_path"], rel)
     is_dir = os.path.isdir(src)
     dest = remote_join(s["outbound"], "%s-%s/%s" % (runtime, utc_stamp(), rel))
     keep, skipped = folder_files(src, rel, s["rules"]) if is_dir else ([], [])
@@ -290,7 +290,7 @@ def send(args, s, runtime, rel):
             if args.dry_run:
                 shown_list = "<list of %d files>" % len(keep)
             else:
-                fd, listfile = tempfile.mkstemp(prefix="agent-mirror-send-", suffix=".txt")
+                fd, listfile = current().mkstemp("agent-mirror-send-", ".txt")
                 with os.fdopen(fd, "w", encoding="utf-8") as fh:
                     fh.write("\n".join(keep) + "\n")
                 shown_list = listfile

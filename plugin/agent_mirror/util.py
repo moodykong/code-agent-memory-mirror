@@ -57,17 +57,21 @@ def within(path, root):
 
 
 def tilde(path):
-    h = os.path.expanduser("~").rstrip(os.sep)
-    p = str(path)
-    if p == h:
-        return "~"
-    if h and p.startswith(h + os.sep):
-        return "~" + p[len(h) :]
-    return p
+    """path with the home this command resolves shown as ~ (see platforms.py)."""
+    from agent_mirror.platforms import current
+
+    return current().tilde(path)
+
+
+def local_path(root, rel):
+    """A local path for a forward-slash relative path (box and store paths), with native separators."""
+    return os.path.join(root, *[p for p in str(rel).split("/") if p])
 
 
 def expand(path):
-    return os.path.abspath(os.path.expanduser(str(path)))
+    from agent_mirror.platforms import current
+
+    return os.path.abspath(current().expand_user(str(path)))
 
 
 def read_text(path):
@@ -106,6 +110,11 @@ def run(cmd, cwd=None, timeout=DEFAULT_TIMEOUT, capture=True, extra_env=None, me
     if extra_env:
         env.update(extra_env)
     argv = [str(c) for c in cmd]
+    from agent_mirror.platforms import current
+
+    blocked = current().tool_blocked(argv[0])
+    if blocked:
+        return None, "", blocked
     argv[0] = exe_path(argv[0])
     kwargs = dict(
         cwd=cwd,

@@ -4,6 +4,7 @@ import json
 import os
 import unittest
 
+from helpers import setUpModule  # noqa: F401 (the sandbox guard runs first)
 from helpers import ToolTest, memory_dir, write
 
 from agent_mirror.projects import remote_repo_path, repo_matches
@@ -64,9 +65,9 @@ class MultiRepoSessionTest(ToolTest):
         self.assertNotIn("node_modules", out)
         self.assertTrue(os.path.exists(os.path.join(self.known, "dep_sync_ran.marker")), out)
         self.assertFalse(os.path.exists(os.path.join(self.unknown, "dep_sync_ran.marker")))
-        self.assertEqual(os.readlink(memory_dir(self.home, self.known)), self.s("memory", "demo"))
+        self.assertLinked(memory_dir(self.home, self.known), self.s("memory", "demo"))
         # exactly one project matched: the session folder's own memory folder is linked too
-        self.assertEqual(os.readlink(memory_dir(self.home, self.parent)), self.s("memory", "demo"))
+        self.assertLinked(memory_dir(self.home, self.parent), self.s("memory", "demo"))
         self.assertFalse(os.path.lexists(memory_dir(self.home, self.unknown)))
         self.assertIn("memory index: " + self.s("memory", "demo", "MEMORY.md"), out)
 
@@ -74,8 +75,8 @@ class MultiRepoSessionTest(ToolTest):
         self.clone(self.other, "git@github.com:example-org/other.git")
         rc, out = self.session()
         self.assertEqual(rc, 0, out)
-        self.assertEqual(os.readlink(memory_dir(self.home, self.known)), self.s("memory", "demo"))
-        self.assertEqual(os.readlink(memory_dir(self.home, self.other)), self.s("memory", "other"))
+        self.assertLinked(memory_dir(self.home, self.known), self.s("memory", "demo"))
+        self.assertLinked(memory_dir(self.home, self.other), self.s("memory", "other"))
         self.assertTrue(os.path.exists(os.path.join(self.other, "other_sync_ran.marker")), out)
         self.assertFalse(os.path.lexists(memory_dir(self.home, self.parent)))
         self.assertIn("memory index: " + self.s("memory", "demo", "MEMORY.md"), out)
@@ -109,7 +110,7 @@ class MultiRepoSessionTest(ToolTest):
         rc, out = self.session("--project", "other", "--project-path", self.unknown)
         self.assertEqual(rc, 0, out)
         self.assertIn("project: other at %s (forced with --project)" % self.unknown, out)
-        self.assertEqual(os.readlink(memory_dir(self.home, self.unknown)), self.s("memory", "other"))
+        self.assertLinked(memory_dir(self.home, self.unknown), self.s("memory", "other"))
         self.assertFalse(os.path.lexists(memory_dir(self.home, self.known)))
         self.assertIn("memory index: " + self.s("memory", "other", "MEMORY.md"), out)
 

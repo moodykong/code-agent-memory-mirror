@@ -10,11 +10,13 @@ import gzip
 import io
 import json
 import os
+import shlex
 import shutil
 import tarfile
 import unittest
 
-from helpers import FAKE_RCLONE, ToolTest, install_fake, read, write
+from helpers import setUpModule  # noqa: F401 (the sandbox guard runs first)
+from helpers import FAKE_RCLONE, ToolTest, install_fake, read, remove_tree, write
 
 from agent_mirror.box.archive import safe_extract
 from agent_mirror.box.extras import fuse_status, mount_cmd, unmount_cmd
@@ -38,7 +40,10 @@ class ArchiveTestBase(ToolTest):
             fh.write(os.urandom(3000))
         write(os.path.join(ws, ".env"), "SECRET=1\n")
         write(os.path.join(ws, "src", "__pycache__", "m.pyc"), "x")
-        os.symlink("/etc/hostname", os.path.join(ws, "link-out"))
+        try:
+            os.symlink(os.path.join(os.sep, "etc", "hostname"), os.path.join(ws, "link-out"))
+        except (OSError, NotImplementedError):
+            pass  # no symlinks here; the archive must leave links out either way
         self.originals = {}
         for root, _, files in os.walk(ws):
             for f in files:
@@ -284,7 +289,7 @@ class GuardAndExtractUnitTest(unittest.TestCase):
 
     def test_safe_extract_rejects_unsafe_members(self):
         base = os.path.realpath(__import__("tempfile").mkdtemp(prefix="agent-mirror-tar-"))
-        self.addCleanup(shutil.rmtree, base, True)
+        self.addCleanup(remove_tree, base)
         bundle = os.path.join(base, "b.tar.gz")
         with tarfile.open(bundle, "w:gz") as tf:
             for name, data in (
@@ -361,8 +366,8 @@ class MountTest(ToolTest):
         )
         self.assertEqual(rc, 0, out)
         self.assertIn(
-            "would run: rclone mount od:box/in %s --read-only --vfs-cache-mode full --vfs-cache-max-size 3G --daemon"
-            % self.p("mnt", "box"),
+            "would run: rclone mount od:box/in %s --read-only --vfs-cache-mode full --vfs-cache-max-size 3G%s"
+            % (shlex.quote(self.p("mnt", "box")), "" if os.name == "nt" else " --daemon"),
             out,
         )
         self.assertIn("FUSE:", out)
@@ -394,7 +399,10 @@ class RcloneEnvTest(ToolTest):
         rc, out = self.run_tool("box", "rclone-env", "--remote", "mydrive", "--out", target, env=env)
         self.assertEqual(rc, 0, out)
         self.assertNotIn("token-value", out)
-        self.assertEqual(os.stat(target).st_mode & 0o777, 0o600)
+        if os.name == "nt":
+            self.assertIn("OUTSIDE your user profile", out)  # Windows ignores 0600; base/ is outside the home
+        else:
+            self.assertEqual(os.stat(target).st_mode & 0o777, 0o600)
         lines = dict(line.split("=", 1) for line in read(target).splitlines())
         self.assertEqual(lines["RCLONE_CONFIG_MYDRIVE_DRIVE_ID"], "d1")
         self.assertEqual(lines["RCLONE_CONFIG_MYDRIVE_TOKEN"], "'%s'" % token)  # JSON is single-quoted for shells and dotenv readers

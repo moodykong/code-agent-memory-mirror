@@ -32,7 +32,8 @@ from agent_mirror import __version__
 from agent_mirror.box.local import FetchRecord, disk_guard, human
 from agent_mirror.box.rules import is_env_file
 from agent_mirror.runtime import CLOUD_RUNTIMES
-from agent_mirror.util import err, out, show_cmd, utc_stamp, warn
+from agent_mirror.platforms import current
+from agent_mirror.util import err, out, show_cmd, utc_stamp, warn, within
 
 ARCHIVE_DIR = "_archives"
 DEFAULT_LARGE = 50 * 1024**2
@@ -259,7 +260,7 @@ def load_toc(sidecar, side, timeout):
     rel = sidecar.get("toc_file")
     if not rel:
         return None
-    tmp = tempfile.mkdtemp(prefix="agent-mirror-toc-")
+    tmp = current().mkdtemp("agent-mirror-toc-")
     try:
         path = os.path.join(tmp, "toc.json.gz")
         if side.get(rel, path, timeout) != "ok":
@@ -324,7 +325,7 @@ def push_one(args, s, side, name):
         out("%s: unchanged since the last push (fingerprint %s); skipped" % (name, fp_all[:12]))
         return 0
     remote_toc = dict((e.get("path"), e) for e in (load_toc(remote, side, args.timeout) or []) if isinstance(e, dict))
-    tmp = tempfile.mkdtemp(prefix="agent-mirror-archive-")
+    tmp = current().mkdtemp("agent-mirror-archive-")
     try:
         archive_bytes = (remote.get("bundle") or {}).get("archive_bytes", 0)
         if small and (remote.get("bundle_fingerprint") != fp_bundle or not remote.get("bundle")):
@@ -478,7 +479,7 @@ def safe_extract(bundle, project_path, top, wanted, overwrite):
             parent = os.path.dirname(dest)
             os.makedirs(parent, exist_ok=True)
             real_parent = os.path.realpath(parent)
-            if not (real_parent == root or real_parent.startswith(root + os.sep)):
+            if not within(real_parent, root):
                 rejected += 1
                 continue
             if os.path.lexists(dest) and not overwrite:
@@ -671,7 +672,7 @@ def send_archive(args, s, runtime, side, rel):
             % show_cmd(side.put_cmd("<temp>/%s.tar.gz" % posixpath.basename(rel), dest, overwrite=False))
         )
         return 0
-    tmp = tempfile.mkdtemp(prefix="agent-mirror-send-")
+    tmp = current().mkdtemp("agent-mirror-send-")
     try:
         if not disk_guard(tmp, total, BUILD_MARGIN, getattr(args, "force", False), label="a 16 MiB margin"):
             return 1

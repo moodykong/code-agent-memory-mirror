@@ -1,14 +1,16 @@
 """Command line for agent-mirror. Run `agent-mirror -h` or `agent-mirror <command> -h`."""
 
 import argparse
+import json
 import os
 import sys
 
 from agent_mirror import __version__
 from agent_mirror.box.common import DEFAULT_TRANSFER_TIMEOUT
 from agent_mirror.config import Context
+from agent_mirror.platforms import SANDBOX_EXIT
 from agent_mirror.runtime import AGENT_NAMES, detect_runtime
-from agent_mirror.util import DEFAULT_TIMEOUT, out
+from agent_mirror.util import DEFAULT_TIMEOUT, err, out
 
 DESCRIPTION = (
     "Give Claude Code and Codex the same instructions, skills and memory on every machine and in "
@@ -23,6 +25,21 @@ EPILOG = (
 def cmd_detect(args, ctx):
     out(detect_runtime())
     return 0
+
+
+def cmd_debug(args, ctx):
+    """Print every home-like location as JSON; exit 97 when one is outside the test sandbox."""
+    plat = ctx.plat
+    violations = plat.sandbox_violations()
+    data = {
+        "platform": plat.name,
+        "agent_mirror_home": plat.mirror_home,
+        "sandbox": plat.sandbox(),
+        "locations": plat.locations(),
+        "outside_sandbox": [name for name, _ in violations],
+    }
+    out(json.dumps(data, indent=2))
+    return SANDBOX_EXIT if violations else 0
 
 
 def lazy(module, func):
@@ -70,6 +87,10 @@ def build_parser():
         help="read the box settings from this env.json instead of projects/<project>/env.json; "
         "box index then writes box_index.jsonl next to it",
     )
+
+    s = sub.add_parser("debug", parents=[common], help="diagnostics: debug paths prints every resolved location")
+    s.add_argument("what", choices=["paths"])
+    s.set_defaults(func=cmd_debug)
 
     s = sub.add_parser("detect", parents=[common], help="print the runtime name")
     s.set_defaults(func=cmd_detect)
@@ -228,6 +249,14 @@ def main(argv=None):
         argv = argv[:at] + [a for a in rest if a != "--secret"] + [a for a in rest if a == "--secret"]
     args = build_parser().parse_args(argv)
     ctx = Context(store_flag=getattr(args, "store", None))
+    if args.cmd != "debug":
+        violations = ctx.plat.sandbox_violations()
+        if violations:
+            err(
+                "AGENT_MIRROR_TEST_SANDBOX is set to %s, but these locations are outside it, so nothing runs: %s"
+                % (ctx.plat.sandbox(), "; ".join("%s=%s" % v for v in violations))
+            )
+            return SANDBOX_EXIT
     try:
         return args.func(args, ctx) or 0
     except KeyboardInterrupt:

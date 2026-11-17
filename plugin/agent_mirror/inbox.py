@@ -22,10 +22,10 @@ import os
 import shutil
 import socket
 import subprocess
-import tempfile
 import time
 
 from agent_mirror.runtime import CLOUD_RUNTIMES, detect_runtime
+from agent_mirror.platforms import current
 from agent_mirror.util import err, git, out, short, warn
 
 PREFIX = "inbox/"
@@ -450,7 +450,7 @@ def cmd_review(args, ctx):
     rc, changed, _ = git(root, ["diff", "--name-only", "-z", rep.base, "HEAD"], timeout)
     main_changed = set(p for p in changed.split("\0") if p)
     status = dict((p, st) for st, p in rep.held)
-    tmp = tempfile.mkdtemp(prefix="agent-mirror-review-")
+    tmp = current().mkdtemp("agent-mirror-review-")
     try:
         for p in chosen:
             if status[p] == "D":

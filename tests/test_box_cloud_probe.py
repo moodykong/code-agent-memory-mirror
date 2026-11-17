@@ -2,10 +2,12 @@
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import unittest
 
+from helpers import setUpModule  # noqa: F401 (the sandbox guard runs first)
 from helpers import FAKE_AZ, FAKE_RCLONE, ToolTest, clean_env, install_fake, read, write
 
 from agent_mirror.box.rclone import rclone_pattern
@@ -58,7 +60,7 @@ class RcloneBoxTest(ToolTest):
             "would run: rclone copy %s fakeremote:box/in --filter '- .env' --filter '- *.env' "
             "--filter '- /_archives/**' --filter '- /.agent-mirror/**' --filter '- /_box/**' "
             "--filter '- /_agent_outbound/**' --filter '- /temporary/scratch/**' --filter '- __pycache__/**' "
-            "--filter '+ /temporary/**' --filter '+ /figures/**' --filter '- **'" % self.project,
+            "--filter '+ /temporary/**' --filter '+ /figures/**' --filter '- **'" % shlex.quote(self.project),
             out,
         )
         rc, out = self.box_run("box", "push", "--dry-run", "--delete", env=self.rclone_env(CLAUDECODE="1"), az={})
@@ -168,7 +170,9 @@ class CloudRenderTest(ToolTest):
         rc, out = self.run_tool("cloud", "render", "--project", "demo", env={"EXAMPLE_API_TOKEN": value})
         self.assertEqual(rc, 0, out)
         cloud = self.s("projects", "demo", "cloud")
-        files = sorted(os.path.relpath(os.path.join(r, f), cloud) for r, _, fs in os.walk(cloud) for f in fs)
+        files = sorted(
+            os.path.relpath(os.path.join(r, f), cloud).replace(os.sep, "/") for r, _, fs in os.walk(cloud) for f in fs
+        )
         self.assertEqual(
             files,
             [
@@ -224,7 +228,12 @@ class CloudRenderTest(ToolTest):
             self.assertNotIn(value, text, rel)
             self.assertNotRegex(text, r"@@[A-Z_]+@@")
         self.assertNotIn(self.leaked, out)
-        if shutil.which("bash"):
+        for rel in files:
+            if rel.endswith(".sh"):
+                with open(os.path.join(cloud, *rel.split("/")), "rb") as fh:
+                    self.assertNotIn(b"\r\n", fh.read(), "%s must use LF line endings on every platform" % rel)
+        # `bash -n` syntax check: POSIX only (on Windows `bash` may be WSL's, which cannot read Windows paths)
+        if shutil.which("bash") and os.name != "nt":
             for rel in files:
                 if rel.endswith(".sh"):
                     proc = subprocess.run(

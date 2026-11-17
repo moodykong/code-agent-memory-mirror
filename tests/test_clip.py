@@ -3,9 +3,24 @@
 import os
 import unittest
 
+from helpers import setUpModule  # noqa: F401 (the sandbox guard runs first)
 from helpers import ToolTest, install_fake, read, write
 
 from agent_mirror.clip import backend, summarize
+
+# Windows: the backend is clip.exe plus PowerShell; these fakes act out the three -Command strings.
+FAKE_POWERSHELL = r"""
+import os, sys
+store = os.environ["FAKE_CLIP_STORE"]
+command = sys.argv[-1]
+if "Get-Clipboard" in command:
+    sys.stdout.buffer.write(open(store, "rb").read() if os.path.exists(store) else b"")
+elif "ReadToEnd" in command:
+    open(store, "wb").write(sys.stdin.buffer.read())
+elif "$null" in command:
+    open(store, "wb").close()
+"""
+FAKE_CLIP = "pass\n"
 
 FAKE_XCLIP = r"""
 import os, sys
@@ -58,7 +73,11 @@ class BackendTest(unittest.TestCase):
 
 class ClipCommandTest(ToolTest):
     def test_copy_check_clear_with_a_fake_xclip(self):
-        fakebin = install_fake(self.base, "xclip", FAKE_XCLIP)
+        if os.name == "nt":
+            install_fake(self.base, "clip", FAKE_CLIP)
+            fakebin = install_fake(self.base, "powershell", FAKE_POWERSHELL)
+        else:
+            fakebin = install_fake(self.base, "xclip", FAKE_XCLIP)
         store = os.path.join(self.base, "clipboard.txt")
         env = {"PATH": fakebin, "DISPLAY": ":0", "FAKE_CLIP_STORE": store}
         values = os.path.join(self.base, "values.env")

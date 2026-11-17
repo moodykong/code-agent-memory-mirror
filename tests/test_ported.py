@@ -6,17 +6,23 @@ Run from the repo root:  python3 -m unittest discover -s tests -v
 import glob
 import json
 import os
+import shlex
 import shutil
 import unittest
 
+from helpers import setUpModule  # noqa: F401 (the sandbox guard runs first)
 from helpers import (
     LOCAL_INDEX,
     SHARED_BODY,
     STORE_INDEX,
+    SYMLINKS,
     TOOL,
     ToolTest,
+    dir_link,
+    is_link,
     memory_dir,
     read,
+    readlink,
     write,
 )
 
@@ -56,14 +62,11 @@ class PortedTest(ToolTest):
             memory_dir(self.home, self.project): self.s("memory", "demo"),
         }
         for link, target in expected.items():
-            self.assertTrue(os.path.islink(link), link)
-            self.assertEqual(os.readlink(link), target)
+            self.assertLinked(link, target)
         # entries that are not store skills are never touched
         self.assertTrue(os.path.isdir(self.h(".claude", "skills", "synced")))
-        self.assertFalse(os.path.islink(self.h(".claude", "skills", "synced")))
-        self.assertEqual(
-            os.readlink(self.h(".claude", "skills", "projlink")), os.path.join(self.base, "otherproject", "plugin")
-        )
+        self.assertFalse(is_link(self.h(".claude", "skills", "synced")))
+        self.assertLinked(self.h(".claude", "skills", "projlink"), os.path.join(self.base, "otherproject", "plugin"))
         # backups and the manifest
         manifests = self.manifests()
         self.assertEqual(len(manifests), 1)
@@ -85,12 +88,12 @@ class PortedTest(ToolTest):
     def test_install_is_idempotent(self):
         rc, out = self.install()
         self.assertEqual(rc, 0, out)
-        links_before = {p: os.readlink(p) for p in glob.glob(self.h(".claude", "skills", "*")) if os.path.islink(p)}
+        links_before = {p: readlink(p) for p in glob.glob(self.h(".claude", "skills", "*")) if is_link(p)}
         rc, out = self.install()
         self.assertEqual(rc, 0, out)
         self.assertIn("nothing to change", out)
         self.assertEqual(len(self.manifests()), 1)
-        links_after = {p: os.readlink(p) for p in glob.glob(self.h(".claude", "skills", "*")) if os.path.islink(p)}
+        links_after = {p: readlink(p) for p in glob.glob(self.h(".claude", "skills", "*")) if is_link(p)}
         self.assertEqual(links_before, links_after)
         # a plain install now finds the project in the config
         rc, out = self.run_tool("install")
@@ -101,7 +104,7 @@ class PortedTest(ToolTest):
         rc, out = self.install("--dry-run")
         self.assertEqual(rc, 0, out)
         self.assertIn("would link", out)
-        self.assertFalse(os.path.islink(self.h(".claude", "CLAUDE.md")))
+        self.assertFalse(is_link(self.h(".claude", "CLAUDE.md")))
         self.assertFalse(os.path.exists(self.h(".agent-mirror-backups")))
         self.assertFalse(os.path.exists(self.s("memory", "demo", "local_only.md")))
         self.assertTrue(os.path.isdir(memory_dir(self.home, self.project)))
@@ -126,19 +129,19 @@ class PortedTest(ToolTest):
         rc, out = self.run_tool("uninstall")
         self.assertEqual(rc, 0, out)
         claude_md = self.h(".claude", "CLAUDE.md")
-        self.assertFalse(os.path.islink(claude_md))
+        self.assertFalse(is_link(claude_md))
         self.assertEqual(read(claude_md), "old claude user file\n")
-        self.assertFalse(os.path.islink(self.h(".codex", "AGENTS.md")))
+        self.assertFalse(is_link(self.h(".codex", "AGENTS.md")))
         self.assertEqual(read(self.h(".codex", "AGENTS.md")), "")
-        self.assertFalse(os.path.islink(self.h(".agents", "skills")))
+        self.assertFalse(is_link(self.h(".agents", "skills")))
         self.assertEqual(read(self.h(".agents", "skills", "alpha", "SKILL.md")), "old agents alpha\n")
         self.assertEqual(read(self.h(".claude", "skills", "alpha", "SKILL.md")), "old claude alpha\n")
         self.assertFalse(os.path.lexists(self.h(".claude", "skills", "beta")))
         mem = memory_dir(self.home, self.project)
-        self.assertFalse(os.path.islink(mem))
+        self.assertFalse(is_link(mem))
         self.assertEqual(read(os.path.join(mem, "MEMORY.md")), LOCAL_INDEX)
         self.assertTrue(os.path.isdir(self.h(".claude", "skills", "synced")))
-        self.assertTrue(os.path.islink(self.h(".claude", "skills", "projlink")))
+        self.assertTrue(is_link(self.h(".claude", "skills", "projlink")))
         self.assertTrue(json.loads(read(self.manifests()[0]))["restored_at"])
         rc, out = self.run_tool("uninstall")
         self.assertEqual(rc, 0, out)
@@ -147,6 +150,8 @@ class PortedTest(ToolTest):
     def test_refuses_targets_outside_store_and_loops(self):
         outside = os.path.join(self.base, "outside", "evil")
         write(os.path.join(outside, "SKILL.md"), "outside\n")
+        if not SYMLINKS:
+            self.skipTest("needs symlink creation to build a link loop (not available on this machine)")
         os.symlink(outside, self.s("skills", "evil"))
         os.symlink("loopy", self.s("skills", "loopy"))
         rc, out = self.run_tool("install", "--agents", "claude")
@@ -155,16 +160,16 @@ class PortedTest(ToolTest):
         self.assertIn("link loop", out)
         self.assertFalse(os.path.lexists(self.h(".claude", "skills", "evil")))
         self.assertFalse(os.path.lexists(self.h(".claude", "skills", "loopy")))
-        self.assertEqual(os.readlink(self.h(".claude", "skills", "alpha")), self.s("skills", "alpha"))
+        self.assertLinked(self.h(".claude", "skills", "alpha"), self.s("skills", "alpha"))
 
     def test_refuses_link_location_inside_store(self):
         shutil.rmtree(self.h(".claude", "skills"))
-        os.symlink(self.s("skills"), self.h(".claude", "skills"))
+        dir_link(self.s("skills"), self.h(".claude", "skills"))
         rc, out = self.run_tool("install", "--agents", "claude")
         self.assertNotEqual(rc, 0, out)
         self.assertIn("inside the store", out)
         alpha = self.s("skills", "alpha")
-        self.assertTrue(os.path.isdir(alpha) and not os.path.islink(alpha))
+        self.assertTrue(os.path.isdir(alpha) and not is_link(alpha))
         self.assertTrue(os.path.isfile(os.path.join(alpha, "SKILL.md")))
 
     # sync --------------------------------------------------------------------
@@ -240,7 +245,7 @@ class PortedTest(ToolTest):
         )
         self.assertEqual(rc, 0, out)
         self.assertFalse(os.path.exists(os.path.join(self.project, "dep_sync_ran.marker")))
-        self.assertFalse(os.path.islink(self.h(".claude", "CLAUDE.md")))
+        self.assertFalse(is_link(self.h(".claude", "CLAUDE.md")))
         self.assertFalse(os.path.exists(self.h(".agent-mirror-backups")))
         self.assertIn("memory index: " + self.s("memory", "demo", "MEMORY.md"), out)
 
@@ -253,9 +258,9 @@ class PortedTest(ToolTest):
         )
         self.assertEqual(rc, 0, out)
         self.assertTrue(os.path.exists(os.path.join(self.project, "dep_sync_ran.marker")), out)
-        self.assertEqual(os.readlink(self.h(".claude", "CLAUDE.md")), self.s("AGENTS.md"))
-        self.assertEqual(os.readlink(memory_dir(self.home, self.project)), self.s("memory", "demo"))
-        self.assertFalse(os.path.islink(self.h(".codex", "AGENTS.md")))  # claude-cloud installs for Claude only
+        self.assertLinked(self.h(".claude", "CLAUDE.md"), self.s("AGENTS.md"))
+        self.assertLinked(memory_dir(self.home, self.project), self.s("memory", "demo"))
+        self.assertFalse(is_link(self.h(".codex", "AGENTS.md")))  # claude-cloud installs for Claude only
         self.assertIn("memory index: " + self.s("memory", "demo", "MEMORY.md"), out)
 
     # box (fake az on PATH, no network) -------------------------------------------
@@ -298,11 +303,12 @@ class PortedTest(ToolTest):
             "would run: az storage blob sync --account-name testacct --auth-mode login --container in-box "
             "--source %s --destination demo/temporary/ --delete-destination false "
             "--exclude-path 'downloads/;scratch/;a/__pycache__/' --exclude-pattern '.env;*.env' "
-            "--only-show-errors" % self.p("temporary"),
+            "--only-show-errors" % shlex.quote(self.p("temporary")),
             out,
         )
         self.assertIn(
-            "--source %s --destination demo/figures/ --delete-destination false --exclude-pattern" % self.p("figures"),
+            "--source %s --destination demo/figures/ --delete-destination false --exclude-pattern"
+            % shlex.quote(self.p("figures")),
             out,
         )
         self.assertIn("docs/slides: skipped (no such folder in the project)", out)
@@ -430,7 +436,7 @@ class PortedTest(ToolTest):
         self.assertRegex(
             out,
             r"would run: az storage blob upload --account-name testacct --auth-mode login --container-name out-box "
-            r"--name demo/codex-cloud-\d{8}T\d{6}Z/temporary/result\.csv --file \S+/temporary/result\.csv "
+            r"--name demo/codex-cloud-\d{8}T\d{6}Z/temporary/result\.csv --file '?\S+[/\\]temporary[/\\]result\.csv'? "
             r"--overwrite false",
         )
         for bad in (

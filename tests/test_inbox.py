@@ -7,6 +7,7 @@ import json
 import os
 import unittest
 
+from helpers import setUpModule  # noqa: F401 (the sandbox guard runs first)
 from helpers import SHARED_BODY, STORE_INDEX, ToolTest, read, write
 
 

@@ -105,6 +105,7 @@ on the vendor's settings page.
 | `cloud runbook --project NAME [--vendor V] [--json]` | print the setup steps for a person, or the runbook JSON |
 | `review [list \| show BRANCH \| accept BRANCH [--paths ...] \| discard BRANCH]` | handle inbox branches pushed by cloud sessions (developer machines only) |
 | `clip copy FILE [--secret]`, `clip check [--secret]`, `clip clear` | put text on the clipboard and check it without printing secrets |
+| `debug paths` | print every home-like location agent-mirror resolves, as JSON (see `AGENT_MIRROR_HOME` in plugin/docs/platforms.md) |
 
 A session may run inside one clone or in a folder above several clones: `session-start`, `doctor` and
 `probe` scan child folders for git repos and set up every repo whose origin matches a project in the
@@ -176,7 +177,7 @@ kept out of the bundle and fetched only when named. Settings and rules:
 
 | | Linux (including WSL 2) | macOS | Windows |
 | --- | --- | --- | --- |
-| Status | verified (tests pass on Python 3.9 and 3.10) | UNVERIFIED | Claude home and memory folder names verified; the rest UNVERIFIED |
+| Status | verified (tests pass on Python 3.9 and 3.10) | UNVERIFIED | test suite passes natively (Python 3.11, Windows 11); see plugin/docs/platforms.md for what remains UNVERIFIED |
 | Links | symlinks | symlinks | symlink, else junction (folders) or managed copy (files) |
 | Periodic sync | systemd user timer | launchd agent | schtasks |
 | Launcher | `plugin/bin/agent-mirror` | `plugin/bin/agent-mirror` | `plugin/bin/agent-mirror.cmd` |
@@ -192,8 +193,12 @@ together with the case of one Windows PC with WSL (two homes, two installs, one 
 python3 -m unittest discover -s tests
 ```
 
-The tests run `agent-mirror` against throwaway fake home folders and stores, with fake `az` and
-`rclone` programs, so the real home folder, cloud accounts and schedulers are never touched.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) first. The tests run `agent-mirror` only inside a sandbox guard:
+`AGENT_MIRROR_HOME` moves every home-like location into a throwaway folder, and with
+`AGENT_MIRROR_TEST_SANDBOX` set every command exits with code 97 if any location is outside it. The test
+run refuses to start unless `agent-mirror debug paths` shows every location inside the sandbox. Fake `az`,
+`rclone` and clipboard programs stand in for the real ones. The suite passes on Linux (Python 3.9, 3.10)
+and natively on Windows 11 (Python 3.11).
 
 ## License
 

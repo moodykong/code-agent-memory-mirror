@@ -4,6 +4,7 @@ import json
 import os
 import unittest
 
+from helpers import setUpModule  # noqa: F401 (the sandbox guard runs first)
 from helpers import FAKE_AZ, FAKE_RCLONE, ToolTest, install_fake, read, write
 
 from agent_mirror import recipes
@@ -52,7 +53,7 @@ class RecipeValidationTest(unittest.TestCase):
 class CloudSecretsTest(ToolTest):
     def setUp(self):
         super().setUp()
-        self.secret_file = os.path.join(self.base, "private", "values.env")
+        self.secret_file = os.path.join(self.home, "private", "values.env")
         write(self.secret_file, "API_KEY_ONE=abc123\nexport OTHER='two words'\n")
         os.chmod(self.secret_file, 0o600)
         env = json.loads(read(self.s("projects", "demo", "env.json")))
@@ -106,20 +107,34 @@ class CloudSecretsTest(ToolTest):
             self.assertNotIn(value, out)
 
     def test_check_reports_what_needs_you(self):
-        os.chmod(self.secret_file, 0o644)
+        if os.name == "nt":
+            # Windows ignores 0600: a secret file counts as private only inside the user profile
+            outside = os.path.join(self.base, "private", "values.env")
+            write(outside, read(self.secret_file))
+            env = json.loads(read(self.s("projects", "demo", "env.json")))
+            env["secrets"][0]["path"] = outside
+            write(self.s("projects", "demo", "env.json"), json.dumps(env))
+            expected = "move %s inside your user profile" % outside
+        else:
+            os.chmod(self.secret_file, 0o644)
+            expected = "make %s owner-only (chmod 600" % self.secret_file
         rc, out = self.secrets("--check", FAKE_RCLONE_CONFIG="{}", FAKE_AZ_KEYVAULT="{}", FROM_ENV="")
         self.assertEqual(rc, 3, out)
-        self.assertIn("make %s owner-only (chmod 600" % self.secret_file, out)
+        self.assertIn(expected, out)
         self.assertIn("run `rclone config`, create a remote named mydrive", out)
         self.assertIn("set FROM_ENV in this shell's environment", out)
         self.assertIn("could not read secret vaulted-secret from vault my-vault", out)
         self.assertIn("ready", out)  # the literal still is
 
     def test_out_writes_owner_only_file_and_prints_no_values(self):
-        target = os.path.join(self.base, "outside", "values.env")
+        target = os.path.join(self.home, "private-out", "values.env")
         rc, out = self.secrets("--out", target)
         self.assertEqual(rc, 0, out)
-        self.assertEqual(os.stat(target).st_mode & 0o777, 0o600)
+        if os.name == "nt":
+            self.assertIn("inside your user profile", out)
+        else:
+            self.assertIn("owner-only, mode 0600", out)
+            self.assertEqual(os.stat(target).st_mode & 0o777, 0o600)
         text = read(target)
         self.assertIn("OTHER='two words'\n", text)
         self.assertIn("RCLONE_CONFIG_MYDRIVE_TOKEN='%s'\n" % self.token, text)
@@ -136,10 +151,17 @@ class CloudSecretsTest(ToolTest):
         self.assertIn("--replace", out)
         rc, out = self.secrets("--out", target, "--replace")
         self.assertEqual(rc, 0, out)
-        os.chmod(target, 0o644)
-        rc, out = self.secrets("--out", target, "--replace")
-        self.assertEqual(rc, 2, out)
-        self.assertIn("not an owner-only regular file", out)
+        if os.name == "nt":
+            exposed = os.path.join(self.base, "exposed.env")
+            write(exposed, "OLD=1\n")
+            rc, out = self.secrets("--out", exposed, "--replace")
+            self.assertEqual(rc, 2, out)
+            self.assertIn("is not a regular file inside your user profile", out)
+        else:
+            os.chmod(target, 0o644)
+            rc, out = self.secrets("--out", target, "--replace")
+            self.assertEqual(rc, 2, out)
+            self.assertIn("not an owner-only regular file", out)
 
     def test_out_refuses_store_and_git_work_trees(self):
         rc, out = self.secrets("--out", self.s("values.env"))

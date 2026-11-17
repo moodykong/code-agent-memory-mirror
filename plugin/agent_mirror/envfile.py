@@ -64,14 +64,43 @@ def parse_env_text(text):
     return found
 
 
+def in_user_profile(path):
+    from agent_mirror.platforms import current
+
+    return within(os.path.realpath(path), os.path.realpath(current().home()))
+
+
 def owner_only(path):
-    """True when no one but the owner can read the file (always True on Windows, UNVERIFIED there)."""
+    """True when no one but the owner can read the file.
+
+    POSIX: no group or other permission bits. Windows ignores those bits, so there the file
+    must be inside the user profile, whose permissions keep other accounts out.
+    """
     if os.name == "nt":
-        return True
+        return os.path.isfile(path) and in_user_profile(path)
     try:
         return not (os.stat(path).st_mode & (stat.S_IRWXG | stat.S_IRWXO))
     except OSError:
         return False
+
+
+def privacy_words(path):
+    """How private a written secret file is, in words that are true on this OS."""
+    if os.name != "nt":
+        return "owner-only, mode 0600"
+    if in_user_profile(path):
+        return "inside your user profile; Windows ignores 0600, the profile's permissions keep other accounts out"
+    return (
+        "OUTSIDE your user profile: Windows ignores 0600, so other accounts on this machine may be able to "
+        "read it; prefer a path inside your profile"
+    )
+
+
+def privacy_instruction(path):
+    """What to do when a secret file is readable by others."""
+    if os.name == "nt":
+        return "move %s inside your user profile (Windows ignores 0600 permissions)" % path
+    return "make %s owner-only (chmod 600 %s)" % (path, path)
 
 
 def placement_problem(path, store_root=None, refuse_git=True):
@@ -101,7 +130,8 @@ def write_secret_file(path, pairs, replace=False):
         if not replace:
             return "%s already exists; remove it first, or pass --replace to overwrite it" % path
         if os.path.islink(path) or not os.path.isfile(path) or not owner_only(path):
-            return "%s is not an owner-only regular file; it is not overwritten" % path
+            what = "a regular file inside your user profile" if os.name == "nt" else "an owner-only regular file"
+            return "%s is not %s; it is not overwritten" % (path, what)
         os.remove(path)
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)

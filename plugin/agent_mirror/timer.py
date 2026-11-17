@@ -67,8 +67,7 @@ def systemd_units(argv, minutes):
 
 
 def systemd_dir(plat):
-    base = plat.env.get("XDG_CONFIG_HOME") or plat.join(plat.home(), ".config")
-    return plat.join(base, "systemd", "user")
+    return plat.systemd_user_dir()
 
 
 # launchd (macOS) -----------------------------------------------------------------------------
@@ -90,7 +89,7 @@ def launchd_plist(argv, minutes, log_path, path_env=None):
 
 
 def launchd_path(plat):
-    return plat.join(plat.home(), "Library", "LaunchAgents", LABEL + ".plist")
+    return plat.join(plat.launch_agents_dir(), LABEL + ".plist")
 
 
 # schtasks (Windows) -----------------------------------------------------------------------------

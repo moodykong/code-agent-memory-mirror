@@ -3,11 +3,14 @@
 import json
 import os
 import plistlib
+import sys
 import unittest
 
+from helpers import setUpModule  # noqa: F401 (the sandbox guard runs first)
 from helpers import PLUGIN, ToolTest, read, write
 
 from agent_mirror.hooks import classify, merge_install, merge_uninstall
+from agent_mirror.platforms import Platform
 from agent_mirror.timer import preview, systemd_quote
 
 EXISTING = {
@@ -32,7 +35,7 @@ class HooksTest(ToolTest):
         data = json.loads(read(self.settings_path()))
         self.assertEqual(data["model"], "some-model")
         self.assertEqual(data["permissions"], EXISTING["permissions"])
-        launcher = os.path.join(PLUGIN, "bin", "agent-mirror")
+        launcher = Platform(None, {}).launcher(PLUGIN)
         cmds = {}
         for event, groups in data["hooks"].items():
             for g in groups:
@@ -41,13 +44,13 @@ class HooksTest(ToolTest):
         self.assertIn((None, {"type": "command", "command": "echo hello"}), cmds["SessionStart"])
         self.assertIn(("Bash", {"type": "command", "command": "echo after-bash"}), cmds["PostToolUse"])
         start = [h for m, h in cmds["SessionStart"] if "agent-mirror" in h["command"]][0]
-        self.assertEqual(start["command"], launcher + " session-start")
+        self.assertEqual(start["command"], Platform(None, {}).command_line([launcher, "session-start"]))
         write_hook = [(m, h) for m, h in cmds["PostToolUse"] if "agent-mirror" in h["command"]][0]
         self.assertEqual(write_hook[0], "Write|Edit")
         self.assertIs(write_hook[1]["async"], True)
-        self.assertEqual(write_hook[1]["command"], launcher + " hook memory-write")
+        self.assertEqual(write_hook[1]["command"], Platform(None, {}).command_line([launcher, "hook", "memory-write"]))
         end = cmds["SessionEnd"][0][1]
-        self.assertEqual(end["command"], launcher + " sync")
+        self.assertEqual(end["command"], Platform(None, {}).command_line([launcher, "sync"]))
         self.assertTrue(os.path.isabs(launcher))
 
         before = read(self.settings_path())
@@ -80,7 +83,7 @@ class HooksTest(ToolTest):
         self.assertEqual(rc, 0, out)
         data = json.loads(read(self.settings_path()))
         cmd = data["hooks"]["SessionEnd"][0]["hooks"][0]["command"]
-        self.assertTrue(cmd.endswith("--store %s sync" % self.store), cmd)
+        self.assertTrue(cmd.endswith(Platform(None, {}).command_line(["--store", self.store, "sync"])), cmd)
         self.assertEqual(classify(cmd), "sync")
 
     def test_codex_and_bad_json_are_refused(self):
@@ -168,6 +171,16 @@ class TimerTest(ToolTest):
     def test_cli_dry_run_writes_and_runs_nothing(self):
         rc, out = self.run_tool("timer", "install", "--minutes", "10", "--dry-run")
         self.assertEqual(rc, 0, out)
+        if sys.platform == "win32":
+            self.assertIn("would run: schtasks /Create /TN agent-mirror-sync /SC MINUTE /MO 10 /TR", out)
+            self.assertIn("--store", out)  # AGENT_MIRROR_STORE is not seen by the scheduler
+            rc, out = self.run_tool("timer", "uninstall", "--dry-run")
+            self.assertIn("would run: schtasks /Delete /TN agent-mirror-sync /F", out)
+            return
+        if sys.platform == "darwin":
+            self.assertIn("would run: launchctl bootstrap", out)
+            self.assertIn("<integer>600</integer>", out)
+            return
         unit_dir = self.h(".config", "systemd", "user")
         self.assertIn("would write %s:" % os.path.join(unit_dir, "agent-mirror-sync.service"), out)
         self.assertIn("OnUnitActiveSec=10min", out)

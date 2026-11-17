@@ -9,7 +9,7 @@ import json
 import os
 import shutil
 
-from agent_mirror.util import err, iso_now, run, warn, within, write_text
+from agent_mirror.util import err, iso_now, norm, run, warn, within, write_text
 
 STATE_DIR = ".agent-mirror"
 RECORD = "fetched.json"
@@ -66,7 +66,7 @@ def ensure_git_exclude(project_path, folder):
         return False
     top = os.path.realpath(top.strip())
     target = os.path.realpath(folder)
-    if not within(target, top) or target == top:
+    if not within(target, top) or norm(target) == norm(top):
         return False
     rc, path, _ = run(["git", "-C", top, "rev-parse", "--git-path", "info/exclude"], timeout=10)
     if rc != 0 or not path.strip():

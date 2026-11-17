@@ -9,9 +9,9 @@ rclone: the configured remote path).
 import json
 import os
 import shutil
-import tempfile
 
 from agent_mirror.box.common import run_transfer
+from agent_mirror.platforms import current
 from agent_mirror.util import short
 
 MISSING_RC = (3, 4)  # rclone: directory not found, file not found
@@ -94,7 +94,7 @@ class AzureSide:
 
     def cat(self, rel, timeout):
         """The text of a small remote file, or None when it does not exist or cannot be read."""
-        tmp = tempfile.mkdtemp(prefix="agent-mirror-cat-")
+        tmp = current().mkdtemp("agent-mirror-cat-")
         try:
             path = os.path.join(tmp, "f")
             if self.get(rel, path, timeout) != "ok" or not os.path.isfile(path):

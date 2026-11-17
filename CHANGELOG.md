@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.1
+
+- Safety: one resolver (`platforms.py`) for every home-like location. `AGENT_MIRROR_HOME` moves them all
+  into one folder on every platform. With `AGENT_MIRROR_TEST_SANDBOX` set, every command exits with code
+  97 when any location is outside the sandbox, and real schedulers and clipboard tools are never started.
+  `agent-mirror debug paths` prints the resolved locations. The test harness sets both for every run and
+  refuses to start a test run that is not sandboxed. (An earlier Windows test run changed a real user
+  profile because the tests isolated HOME only.)
+- Windows: the test suite passes natively (Windows 11, Python 3.11). Fixed: mixed path separators when
+  joining box paths, case-sensitive inside-folder checks, "owner-only" secret files (Windows ignores 0600;
+  agent-mirror now checks and reports "inside the user profile" there). Fake tools work as `.cmd` shims.
+- CONTRIBUTING.md with the test rules.
+
 ## 0.2.0
 
 - Fix after release: the Windows and WSL clipboard copy left an invisible byte order mark before the first line; it now copies through PowerShell. `clip copy --secret FILE` works in either argument order. `clip clear` works on Windows.

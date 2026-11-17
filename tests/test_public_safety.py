@@ -12,6 +12,7 @@ import os
 import re
 import unittest
 
+from helpers import setUpModule  # noqa: F401 (the sandbox guard runs first)
 from helpers import REPO
 
 # (length, sha256 of the lower-case word): words the owner listed as private

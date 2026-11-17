@@ -13,7 +13,7 @@ from agent_mirror.box.common import box_context
 from agent_mirror.box.rules import azure_rule_problems, clean_rel, generic_rule_problems, is_env_file
 from agent_mirror.box.sides import side_for
 from agent_mirror.runtime import detect_runtime
-from agent_mirror.util import err
+from agent_mirror.util import err, local_path
 
 BACKEND_MODULES = {"azure-blob": azure, "rclone": rclone}
 
@@ -59,7 +59,7 @@ def cmd_box(args, ctx):
             if rc is not None:
                 return rc
         return backend.fetch(args, s, runtime, rel)
-    src = os.path.join(s["project_path"], rel)
+    src = local_path(s["project_path"], rel)
     hit = s["rules"].excluded(rel) or (os.path.isdir(src) and s["rules"].excluded(rel + "/"))
     if hit:
         err("refusing to upload %s: it matches the exclude pattern %s" % (rel, hit))

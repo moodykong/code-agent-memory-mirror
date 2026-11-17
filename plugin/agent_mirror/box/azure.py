@@ -23,7 +23,7 @@ from agent_mirror.box.local import FetchRecord, disk_guard
 from agent_mirror.box.sides import AzureSide
 from agent_mirror.box.rules import exclude_rule, folder_files, include_root, is_env_file
 from agent_mirror.runtime import CLOUD_RUNTIMES
-from agent_mirror.util import err, out, short, show_cmd, utc_stamp, warn
+from agent_mirror.util import err, local_path, out, short, show_cmd, utc_stamp, warn
 
 INDEX_PAGE_SIZE = 5000
 SP_VARS = ("AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "AZURE_TENANT_ID")
@@ -312,7 +312,7 @@ def place_files(stage, names, targets, overwrite, moved_names=None):
     """Move downloaded files from the staging folder into the project. Returns counts."""
     moved, kept, failed = 0, 0, []
     for name in names:
-        src = os.path.join(stage, os.path.normpath(name))
+        src = local_path(stage, name)
         dest = targets[name]
         if not os.path.isfile(src):
             failed.append("%s was not downloaded" % name)
@@ -334,7 +334,7 @@ def place_files(stage, names, targets, overwrite, moved_names=None):
 def fetch(args, s, runtime, rel):
     cloud = runtime in CLOUD_RUNTIMES
     project_path = s["project_path"]
-    dest = os.path.join(project_path, rel)
+    dest = local_path(project_path, rel)
     if not cloud and os.path.isfile(dest):
         out("%s already exists locally; fetch never overwrites on a %s runtime, skipped" % (dest, runtime))
         return 0
@@ -386,7 +386,7 @@ def fetch(args, s, runtime, rel):
         return 1
     wanted = [blob] if is_file else members
     cut = len(s["prefix"]) + 1
-    targets = dict((n, os.path.join(project_path, n[cut:])) for n in wanted)
+    targets = dict((n, local_path(project_path, n[cut:])) for n in wanted)
     if not cloud and all(os.path.lexists(t) for t in targets.values()):
         out(
             "all %d files already exist under %s; fetch never overwrites on a %s runtime" % (len(wanted), dest, runtime)
@@ -399,7 +399,7 @@ def fetch(args, s, runtime, rel):
     stage = tempfile.mkdtemp(prefix=".agent-mirror-fetch-", dir=project_path)
     try:
         if is_file:
-            path = os.path.join(stage, os.path.normpath(blob))
+            path = local_path(stage, blob)
             os.makedirs(os.path.dirname(path), exist_ok=True)
             cmd = download_cmd(s, blob, path)
         else:
@@ -436,7 +436,7 @@ def link_or_copy(src, dest):
 
 
 def send(args, s, runtime, rel):
-    src = os.path.join(s["project_path"], rel)
+    src = local_path(s["project_path"], rel)
     is_dir = os.path.isdir(src)
     stamp = utc_stamp()
     dest = "%s/%s-%s/%s" % (s["prefix"], runtime, stamp, rel)
@@ -467,7 +467,7 @@ def send(args, s, runtime, rel):
                 try:
                     source = stage = tempfile.mkdtemp(prefix=".agent-mirror-send-", dir=s["project_path"])
                     for sub in keep:
-                        link_or_copy(os.path.join(src, sub), os.path.join(stage, sub))
+                        link_or_copy(local_path(src, sub), local_path(stage, sub))
                 except OSError as exc:
                     err("could not prepare the filtered copy of %s: %s" % (rel, exc))
                     return 1

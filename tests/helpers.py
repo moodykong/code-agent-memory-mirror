@@ -1,10 +1,18 @@
 """Shared fixtures for the agent-mirror tests (standard library only).
 
-Every test runs the program with HOME set to a throwaway fake home and
-against a throwaway store, so the real home folder is never touched. Fake
-`az` and `rclone` programs stand in for the real ones; nothing reaches a
-network or a cloud account.
+SAFETY: every subprocess gets AGENT_MIRROR_HOME (every home-like location is derived
+from it) and AGENT_MIRROR_TEST_SANDBOX (the program exits with code 97 when any location
+is outside it), plus HOME, USERPROFILE, APPDATA, LOCALAPPDATA, XDG_* and TEMP/TMP pointing
+inside the sandbox; CLAUDE_CONFIG_DIR and CODEX_HOME are removed. Before any test runs,
+importing this module starts `agent-mirror debug paths` in a sandbox and aborts the whole
+test process when a single location is outside it. In-process tests use a Platform
+activated on a sandboxed environment, never the real one.
+
+Fake `az`, `rclone` and clipboard programs stand in for the real ones (a Python script,
+plus a .cmd shim on Windows); nothing reaches a network or a cloud account.
 """
+
+import atexit
 
 import glob
 import json
@@ -12,6 +20,7 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -38,6 +47,13 @@ DROP_NAMES = (
     "CODEX_HOME",
     "APPDATA",
     "LOCALAPPDATA",
+    "HOME",
+    "USERPROFILE",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
 )
 SECRETISH = re.compile(r"(SECRET|TOKEN|PASSWORD|PASS|KEY)$|SECRET", re.I)
 
@@ -56,6 +72,25 @@ DEMO_BOX = {
 }
 
 
+def remove_tree(path):
+    """Delete a test folder completely. On Windows, git object files are read-only and shutil.rmtree with
+    ignore_errors would silently leave them (and the folder) behind, so clear the attribute and retry."""
+
+    def retry(func, target, _exc):
+        try:
+            os.chmod(target, stat.S_IWRITE)
+            func(target)
+        except OSError:
+            pass
+
+    if not os.path.lexists(path):
+        return
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=retry)
+    else:
+        shutil.rmtree(path, onerror=retry)
+
+
 def write(path, text):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
@@ -67,17 +102,134 @@ def read(path):
         return fh.read()
 
 
-def clean_env(home, extra=None):
+def sandbox_env(home, extra=None, sandbox=None):
+    """The environment for one program run: everything home-like points inside the sandbox.
+
+    extra overrides values; a value of None removes the variable.
+    """
+    sandbox = sandbox or os.path.dirname(home)
+    tmp = os.path.join(sandbox, "tmp")
+    os.makedirs(tmp, exist_ok=True)
     env = {
         k: v
         for k, v in os.environ.items()
         if k not in DROP_NAMES and not k.startswith(DROP_PREFIXES) and not SECRETISH.search(k)
     }
-    env["HOME"] = home
-    env["GIT_CONFIG_NOSYSTEM"] = "1"
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
-    env.update(extra or {})
+    env.update(
+        {
+            "AGENT_MIRROR_HOME": home,
+            "AGENT_MIRROR_TEST_SANDBOX": sandbox,
+            "HOME": home,
+            "USERPROFILE": home,
+            "APPDATA": os.path.join(home, "AppData", "Roaming"),
+            "LOCALAPPDATA": os.path.join(home, "AppData", "Local"),
+            "XDG_CONFIG_HOME": os.path.join(home, ".config"),
+            "XDG_CACHE_HOME": os.path.join(home, ".cache"),
+            "TEMP": tmp,
+            "TMP": tmp,
+            "TMPDIR": tmp,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "PYTHONDONTWRITEBYTECODE": "1",
+        }
+    )
+    for k, v in (extra or {}).items():
+        if v is None:
+            env.pop(k, None)
+        else:
+            env[k] = v
     return env
+
+
+def clean_env(home, extra=None):
+    return sandbox_env(home, extra)
+
+
+def path_inside(path, root):
+    """The test suite's own check, independent of the program's."""
+    p = os.path.normcase(os.path.realpath(path))
+    r = os.path.normcase(os.path.realpath(root))
+    return p == r or p.startswith(r.rstrip(os.sep) + os.sep)
+
+
+_GUARD_DONE = []
+
+
+def require_sandbox():
+    """Abort the whole test process unless the program resolves every location inside a sandbox."""
+    if _GUARD_DONE:
+        return
+    base = os.path.realpath(tempfile.mkdtemp(prefix="agent-mirror-guard-"))
+    problem = None
+    try:
+        home = os.path.join(base, "home")
+        os.makedirs(home)
+        try:
+            proc = subprocess.run(
+                [sys.executable, TOOL, "debug", "paths"],
+                cwd=base,
+                env=sandbox_env(home, sandbox=base),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+                timeout=120,
+            )
+            data = json.loads(proc.stdout)
+            outside = [k for k, v in data["locations"].items() if not path_inside(v, base)]
+            if proc.returncode != 0 or outside or data.get("outside_sandbox"):
+                problem = "locations outside the sandbox: %s (rc %s)" % (
+                    ", ".join(outside or data.get("outside_sandbox") or ["?"]),
+                    proc.returncode,
+                )
+        except Exception as exc:  # noqa: BLE001 (any doubt aborts)
+            problem = "the sandbox check could not run: %s" % exc
+    finally:
+        remove_tree(base)
+    if problem:
+        sys.stderr.write("\nREFUSING TO RUN ANY TEST: %s\n" % problem)
+        sys.stderr.flush()
+        os._exit(97)
+    _GUARD_DONE.append(True)
+
+
+def setUpModule():
+    require_sandbox()
+
+
+def can_symlink():
+    probe = tempfile.mkdtemp(prefix="agent-mirror-symlink-probe-")
+    try:
+        os.symlink(probe, os.path.join(probe, "link"), target_is_directory=True)
+        return True
+    except (OSError, NotImplementedError):
+        return False
+    finally:
+        remove_tree(probe)
+
+
+SYMLINKS = can_symlink()  # Windows needs Developer Mode or admin rights for symlinks; never assume either way
+
+
+def dir_link(target, link):
+    """A directory link for a test fixture: a symlink, else (Windows) a junction."""
+    try:
+        os.symlink(target, link, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        from agent_mirror.links import make_junction
+
+        make_junction(link, target)
+
+
+def readlink(path):
+    """Where a symlink or junction points, absolute, without the Windows \\\\?\\ prefix."""
+    from agent_mirror.links import link_target
+
+    return link_target(path)
+
+
+def is_link(path):
+    from agent_mirror.links import is_linklike
+
+    return is_linklike(path)
 
 
 def memory_dir(home, project_path):
@@ -114,7 +266,7 @@ def make_home(base, project_path):
     write(os.path.join(h, ".claude", "skills", "synced", "vendor", "SKILL.md"), "vendor skill\n")
     plugin = os.path.join(base, "otherproject", "plugin")
     os.makedirs(plugin)
-    os.symlink(plugin, os.path.join(h, ".claude", "skills", "projlink"))
+    dir_link(plugin, os.path.join(h, ".claude", "skills", "projlink"))
     write(os.path.join(h, ".codex", "AGENTS.md"), "")
     write(os.path.join(h, ".agents", "skills", "alpha", "SKILL.md"), "old agents alpha\n")
     mem = memory_dir(h, project_path)
@@ -236,7 +388,7 @@ if argv[:3] == ["storage", "blob", "upload"] and root:
 if argv[:3] == ["storage", "blob", "upload-batch"]:
     src = opt("--source")
     entry["files"] = sorted(
-        os.path.relpath(os.path.join(r, f), src) for r, _, fs in os.walk(src) for f in fs
+        os.path.relpath(os.path.join(r, f), src).replace(os.sep, "/") for r, _, fs in os.walk(src) for f in fs
     )
     finish(0, str(len(entry["files"])))
 finish(0)
@@ -311,12 +463,18 @@ finish(0)
 """
 
 
-def install_fake(base, name, source):
-    fakebin = os.path.join(base, "fakebin")
-    path = os.path.join(fakebin, name)
-    if not os.path.isfile(path):
-        write(path, "#!%s\n%s" % (sys.executable, source))
-        os.chmod(path, 0o755)
+def install_fake(base, name, source, folder="fakebin"):
+    """A fake program `name` in base/<folder>: a Python script, run directly on POSIX, through a .cmd shim on Windows."""
+    fakebin = os.path.join(base, folder)
+    script = os.path.join(fakebin, name + ".py")
+    if not os.path.isfile(script):
+        write(script, source)
+        if os.name == "nt":
+            with open(os.path.join(fakebin, name + ".cmd"), "w", newline="\r\n") as fh:
+                fh.write('@"%s" "%%~dp0%s.py" %%*\n' % (sys.executable, name))
+        else:
+            write(os.path.join(fakebin, name), "#!%s\n%s" % (sys.executable, source))
+            os.chmod(os.path.join(fakebin, name), 0o755)
     return fakebin
 
 
@@ -325,13 +483,22 @@ class ToolTest(unittest.TestCase):
 
     def setUp(self):
         self.base = os.path.realpath(tempfile.mkdtemp(prefix="agent-mirror-test-"))
-        self.addCleanup(shutil.rmtree, self.base, True)
+        self.addCleanup(remove_tree, self.base)
         self.project = os.path.join(self.base, "work", "demo")
         os.makedirs(self.project)
         self.store = make_store(self.base)
         self.home = make_home(self.base, self.project)
 
     # helpers -------------------------------------------------------------------
+
+    def assertLinked(self, link, target):
+        """link points at target: a symlink or junction, or (only where symlinks are unavailable) a managed copy."""
+        if is_link(link):
+            self.assertEqual(os.path.normcase(readlink(link)), os.path.normcase(target), link)
+            return
+        self.assertFalse(SYMLINKS, "%s is not a link although symlinks work on this machine" % link)
+        self.assertTrue(os.path.isfile(link) and os.path.isfile(target), "%s is neither a link nor a copy" % link)
+        self.assertEqual(read(link), read(target))
 
     def run_tool(self, *args, **kw):
         extra = {"AGENT_MIRROR_STORE": self.store} if kw.get("with_store", True) else {}
@@ -419,3 +586,22 @@ class ToolTest(unittest.TestCase):
         e = dict(az if az is not None else self.fake_az())
         e.update(env or {})
         return self.run_tool(*args, "--project", "demo", "--project-path", self.project, env=e)
+
+
+# In-process code (tests that call package functions directly) resolves every location through a
+# Platform built on a sandboxed environment, never on the real one.
+_INPROC = os.path.realpath(tempfile.mkdtemp(prefix="agent-mirror-inproc-"))
+atexit.register(remove_tree, _INPROC)
+os.makedirs(os.path.join(_INPROC, "home"), exist_ok=True)
+from agent_mirror import platforms as _platforms  # noqa: E402
+
+SANDBOX_PLATFORM = _platforms.Platform(env=sandbox_env(os.path.join(_INPROC, "home"), sandbox=_INPROC))
+
+
+def reactivate_sandbox():
+    """Put the sandboxed Platform back after an in-process test activated an injected one."""
+    _platforms.activate(SANDBOX_PLATFORM)
+
+
+reactivate_sandbox()
+require_sandbox()

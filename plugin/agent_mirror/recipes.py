@@ -14,8 +14,8 @@ exist; anything else is rejected, and no free-form command from the store is eve
 import os
 import shutil
 
-from agent_mirror.envfile import VALID_NAME, owner_only, parse_env_text
-from agent_mirror.util import run, short
+from agent_mirror.envfile import VALID_NAME, owner_only, parse_env_text, privacy_instruction
+from agent_mirror.util import expand, run, short
 
 RECIPE_TYPES = ("rclone-remote", "local-file", "env", "literal", "azure-keyvault", "ask-user")
 STORE_TOKEN = "STORE_REPO_TOKEN"
@@ -265,12 +265,13 @@ def produce(env, vendor, runner=run):
             for n, v in lines:
                 add(Item(n, kind, "ready", v))
         elif kind == "local-file":
-            path = os.path.expanduser(str(e.get("path")))
+            path = expand(str(e.get("path")))
             values = None
             if not os.path.isfile(path):
-                problem = "create %s (owner-only, NAME=value lines) holding %%s" % path
+                where = "inside your user profile" if os.name == "nt" else "owner-only"
+                problem = "create %s (%s, NAME=value lines) holding %%s" % (path, where)
             elif not owner_only(path):
-                problem = "make %s owner-only (chmod 600 %s); it holds %%s" % (path, path)
+                problem = privacy_instruction(path).replace("%", "%%") + "; it holds %s"
             else:
                 problem = None
                 with open(path, encoding="utf-8") as fh:

@@ -12,7 +12,7 @@ from agent_mirror.install import Installer, link_state, memory_link_path
 from agent_mirror.links import describe
 from agent_mirror.projects import discover_projects
 from agent_mirror.runtime import AGENT_NAMES, detect_runtime
-from agent_mirror.util import git, is_git_toplevel, out, read_text, tilde, upstream
+from agent_mirror.util import expand, git, is_git_toplevel, out, read_text, tilde, upstream
 
 
 def claude_md_state(store):
@@ -73,7 +73,7 @@ def cmd_doctor(args, ctx):
         if not args.project:
             for name, paths in config_projects(ctx.config):
                 for p in paths:
-                    real = os.path.realpath(os.path.expanduser(p))
+                    real = os.path.realpath(expand(p))
                     if os.path.isdir(real) and (name, real) not in projects:
                         projects.append((name, real))
         forced = d.matched[0][0] if d.mode == "forced" else None

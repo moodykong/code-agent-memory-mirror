@@ -4,11 +4,11 @@ import contextlib
 import io
 import json
 import os
-import shutil
 import tempfile
 import unittest
 
-from helpers import make_home, make_store, read, write
+from helpers import setUpModule  # noqa: F401 (the sandbox guard runs first)
+from helpers import make_home, make_store, reactivate_sandbox, read, remove_tree, write
 
 from agent_mirror.config import Context
 from agent_mirror.install import Installer, cmd_uninstall, link_state
@@ -76,7 +76,7 @@ class PlatformMappingTest(unittest.TestCase):
         self.assertEqual(slug_candidates(["C:\\Users\\Name\\my-project"])[0], "C--Users-Name-my-project")
         self.assertEqual(slug_candidates(["C:\\Users\\u\\proj"]), ["C--Users-u-proj", "c--Users-u-proj"])
         base = os.path.realpath(tempfile.mkdtemp(prefix="agent-mirror-slug-"))
-        self.addCleanup(shutil.rmtree, base, True)
+        self.addCleanup(remove_tree, base)
         os.makedirs(os.path.join(base, "projects", "c--Users-u-proj"))
         found = find_claude_project_dir(base, ["C:\\Users\\u\\proj"], windows=True)
         self.assertEqual(found, os.path.join(base, "projects", "c--Users-u-proj"))
@@ -89,10 +89,30 @@ class PlatformMappingTest(unittest.TestCase):
         self.assertEqual(detect_runtime({"AGENT_RUNTIME": "codex-cloud"}), "codex-cloud")
 
 
+class RealJunctionTest(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "directory junctions exist only on Windows")
+    def test_make_detect_and_remove_a_real_junction(self):
+        from agent_mirror.links import is_junction, is_linklike, link_target, make_junction, remove_link
+
+        base = os.path.realpath(tempfile.mkdtemp(prefix="agent-mirror-junction-"))
+        self.addCleanup(remove_tree, base)
+        target = os.path.join(base, "target")
+        write(os.path.join(target, "f.txt"), "x")
+        link = os.path.join(base, "link")
+        make_junction(link, target)
+        self.assertTrue(is_junction(link))
+        self.assertTrue(is_linklike(link))
+        self.assertEqual(os.path.normcase(link_target(link)), os.path.normcase(target))
+        self.assertEqual(read(os.path.join(link, "f.txt")), "x")
+        remove_link(link)
+        self.assertFalse(os.path.lexists(link))
+        self.assertEqual(read(os.path.join(target, "f.txt")), "x")
+
+
 class LinkFallbackTest(unittest.TestCase):
     def setUp(self):
         self.base = os.path.realpath(tempfile.mkdtemp(prefix="agent-mirror-links-"))
-        self.addCleanup(shutil.rmtree, self.base, True)
+        self.addCleanup(remove_tree, self.base)
 
     @staticmethod
     def failing_symlink(*args, **kwargs):
@@ -121,9 +141,11 @@ class LinkFallbackTest(unittest.TestCase):
         os.makedirs(project)
         store = make_store(self.base)
         home = make_home(self.base, project)
-        plat = Platform("linux", {"HOME": home})
+        plat = Platform(None, {"AGENT_MIRROR_HOME": home})
+        self.addCleanup(reactivate_sandbox)
         ctx = Context(store_flag=store, plat=plat)
-        junction = lambda link, target: os.symlink(target, link)  # noqa: E731 (stand-in on Linux)
+        # on Windows the real junction code runs; elsewhere a symlink stands in for it
+        junction = None if os.name == "nt" else (lambda link, target: os.symlink(target, link))  # noqa: E731
 
         def installer():
             return Installer(ctx, False, symlink=self.failing_symlink, junction=junction, fallback=True)

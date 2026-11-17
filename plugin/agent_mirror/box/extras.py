@@ -10,15 +10,16 @@ import tempfile
 from agent_mirror.box.local import disk_guard, ensure_git_exclude, human
 from agent_mirror.box.rules import clean_rel
 from agent_mirror.box.sides import side_for
-from agent_mirror.envfile import quote_env_value, write_secret_file  # noqa: F401 (quote_env_value is re-exported)
-from agent_mirror.platforms import normalize_platform
+from agent_mirror.envfile import privacy_words, write_secret_file
+from agent_mirror.envfile import quote_env_value  # noqa: F401 (re-exported for callers and tests)
+from agent_mirror.platforms import current, normalize_platform
 from agent_mirror.runtime import CLOUD_RUNTIMES
 from agent_mirror.util import err, expand, out, run, scrub, short, show_cmd, warn, within
 
 
 def project_folder(s, value, default):
     value = str(value or default)
-    path = os.path.expanduser(value)
+    path = current().expand_user(value)
     return path if os.path.isabs(path) else os.path.join(s["project_path"], *value.replace("\\", "/").split("/"))
 
 
@@ -284,7 +285,10 @@ def cmd_rclone_env(args, ctx):
     if problem:
         err(problem.replace(", or pass --replace to overwrite it", " (it is never overwritten)"))
         return 2
-    out("wrote %d variable(s) for remote %s to %s (owner-only; values not shown):" % (len(lines), name, path))
+    out(
+        "wrote %d variable(s) for remote %s to %s (%s; values not shown):"
+        % (len(lines), name, path, privacy_words(path))
+    )
     for var, _ in lines:
         out("  " + var)
     return 0

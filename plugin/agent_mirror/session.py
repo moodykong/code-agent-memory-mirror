@@ -10,6 +10,7 @@ import shlex
 import shutil
 import time
 
+from agent_mirror.platforms import current
 from agent_mirror.projects import discover_projects
 from agent_mirror.install import Installer
 from agent_mirror.runtime import CLOUD_RUNTIMES, agent_for_runtime, detect_runtime
@@ -30,8 +31,8 @@ def command_argv(spec, store_root, project_path):
     done = []
     for a in argv:
         a = a.replace("{store}", store_root or "").replace("{project_dir}", project_path or "")
-        if a.startswith("~"):
-            a = os.path.expanduser(a)
+        if a == "~" or a.startswith(("~/", "~\\")):
+            a = current().expand_user(a)
         done.append(a)
     return done
 

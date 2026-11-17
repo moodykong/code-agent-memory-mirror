@@ -65,7 +65,9 @@ names that `env_var_names` does not list.
   `needs you: <instruction>`. It never prints a value. Exit code 0 when everything is ready or only
   `ask-user` items remain, 3 when something else is missing.
 - `... --out FILE` writes `NAME=value` lines (quoted so a shell and a dotenv reader both read them back)
-  for every value it can produce to a new file readable only by you. It refuses a path inside the store,
+  for every value it can produce to a new file readable only by you (mode 0600 on Linux and macOS; on
+  Windows, which ignores 0600, the file should be inside your user profile, and the output says whether
+  it is). It refuses a path inside the store,
   inside any git work tree, or an existing file (`--replace` overwrites an existing owner-only file). It
   prints names and value lengths only, lists what still needs you, and reminds you to delete the file
   after pasting. `agent-mirror clip copy FILE --secret` puts the file on the clipboard without printing it.

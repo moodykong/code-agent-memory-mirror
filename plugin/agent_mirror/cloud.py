@@ -11,8 +11,8 @@ import os
 import re
 
 from agent_mirror import PLUGIN_ROOT, recipes, runbook
-from agent_mirror.envfile import placement_problem, write_secret_file
-from agent_mirror.util import err, out, read_text, run, tilde, warn, write_text
+from agent_mirror.envfile import placement_problem, privacy_words, write_secret_file
+from agent_mirror.util import err, expand, out, read_text, run, tilde, warn, write_text
 
 TEMPLATES = os.path.join(PLUGIN_ROOT, "templates", "cloud")
 SAFE_REF = re.compile(r"^[A-Za-z0-9._/-]+$")
@@ -381,7 +381,7 @@ def cmd_cloud_secrets(args, ctx):
             out("  %-*s  %-15s %s" % (width, it.name, it.recipe, state))
         out("summary: %d ready, %d need you, %d for the user to create" % (len(ready), len(needs), len(asks)))
         return 3 if needs else 0
-    path = os.path.abspath(os.path.expanduser(args.out))
+    path = expand(args.out)
     problem = placement_problem(path, store.root)
     if problem:
         err(problem)
@@ -391,7 +391,7 @@ def cmd_cloud_secrets(args, ctx):
     if problem:
         err(problem)
         return 2
-    out("wrote %d value(s) to %s (owner-only); names and value lengths:" % (len(pairs), path))
+    out("wrote %d value(s) to %s (%s); names and value lengths:" % (len(pairs), path, privacy_words(path)))
     for name, value in pairs:
         out("  %s (%d characters)" % (name, len(str(value))))
     for it in needs:

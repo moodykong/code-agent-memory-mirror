@@ -8,7 +8,7 @@ from agent_mirror.box.local import min_free
 from agent_mirror.box.rules import Rules, azure_rule_problems, clean_rel, generic_rule_problems
 from agent_mirror.config import load_env_file, resolve_project
 from agent_mirror.platforms import new_group_kwargs, stop_tree
-from agent_mirror.util import err, exe_path, out, scrub, tilde
+from agent_mirror.util import err, exe_path, expand, out, scrub, tilde
 
 DEFAULT_TRANSFER_TIMEOUT = 21600
 INDEX_NAME = "box_index.jsonl"
@@ -20,7 +20,7 @@ def box_context(args, ctx):
     """Return (settings, None), or (None, exit code) when there is nothing to do."""
     project, project_path = resolve_project(ctx, args.project, args.project_path)
     if getattr(args, "env_file", None):
-        path = os.path.realpath(os.path.expanduser(args.env_file))
+        path = os.path.realpath(expand(args.env_file))
         env = load_env_file(path)
         project = project or os.path.basename(os.path.dirname(path))
     else:

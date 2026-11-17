@@ -2,12 +2,12 @@
 
 import json
 import os
-import shutil
 import subprocess
 import tempfile
 import unittest
 
-from helpers import ToolTest, clean_env, read, write
+from helpers import setUpModule  # noqa: F401 (the sandbox guard runs first)
+from helpers import ToolTest, clean_env, reactivate_sandbox, read, remove_tree, write
 
 from agent_mirror.config import Context, resolve_store_path
 from agent_mirror.platforms import Platform
@@ -15,8 +15,9 @@ from agent_mirror.platforms import Platform
 
 class ResolutionOrderTest(unittest.TestCase):
     def setUp(self):
+        self.addCleanup(reactivate_sandbox)
         self.base = os.path.realpath(tempfile.mkdtemp(prefix="agent-mirror-cfg-"))
-        self.addCleanup(shutil.rmtree, self.base, True)
+        self.addCleanup(remove_tree, self.base)
         self.home = os.path.join(self.base, "home")
         for n in ("flag", "env", "cfg"):
             os.makedirs(os.path.join(self.base, n))

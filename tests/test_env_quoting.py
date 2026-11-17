@@ -10,6 +10,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "plugin"))
 
 from agent_mirror.box.extras import quote_env_value  # noqa: E402
+from helpers import setUpModule  # noqa: E402,F401 (the sandbox guard runs first)
 
 JSON_TOKEN = '{"access_token":"abc.def","token_type":"Bearer","refresh_token":"M.C5_x!y*z$1","expiry":"2030-01-01T00:00:00Z"}'
 
