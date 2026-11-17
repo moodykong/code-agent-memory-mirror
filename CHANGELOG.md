@@ -2,6 +2,8 @@
 
 ## 0.2.0
 
+- Fix after release: the Windows and WSL clipboard copy left an invisible byte order mark before the first line; it now copies through PowerShell. `clip copy --secret FILE` works in either argument order. `clip clear` works on Windows.
+
 - Secret recipes: `"secrets"` in a project's env.json names where each environment value comes from
   (`rclone-remote`, `local-file`, `env`, `literal`, `azure-keyvault`, `ask-user`), never the value. Other
   recipe types are rejected; no command from the store is ever run. `doctor` and `cloud render` warn about

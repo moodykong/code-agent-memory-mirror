@@ -219,6 +219,13 @@ def build_parser():
 
 
 def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if "clip" in argv:
+        # `clip copy --secret FILE` and `clip copy FILE --secret` must both work; argparse only
+        # accepts the second form when an optional positional follows a flag.
+        at = argv.index("clip") + 1
+        rest = argv[at:]
+        argv = argv[:at] + [a for a in rest if a != "--secret"] + [a for a in rest if a == "--secret"]
     args = build_parser().parse_args(argv)
     ctx = Context(store_flag=getattr(args, "store", None))
     try:

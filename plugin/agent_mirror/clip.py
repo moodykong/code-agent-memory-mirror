@@ -20,6 +20,10 @@ from agent_mirror.platforms import normalize_platform
 from agent_mirror.util import err, out, short
 
 PS_READ = "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; Get-Clipboard -Raw"
+# Copy through PowerShell reading UTF-8 from stdin. clip.exe needs UTF-16 with a byte order mark for
+# non-ASCII text and then leaves that mark on the clipboard as an invisible first character, which
+# would corrupt the first pasted line (a host name, the first line of a script).
+PS_WRITE = "[Console]::InputEncoding=[System.Text.Encoding]::UTF8; $t=[Console]::In.ReadToEnd(); Set-Clipboard -Value $t"
 
 
 def is_wsl(read_version=None):
@@ -40,10 +44,10 @@ def backend(platform_name=None, env=None, which=shutil.which, read_version=None)
         if clip and ps:
             return {
                 "name": "clip.exe and PowerShell",
-                "copy": [clip],
+                "copy": [ps, "-NoProfile", "-Command", PS_WRITE],
                 "paste": [ps, "-NoProfile", "-Command", PS_READ],
-                "clear": None,
-                "encoding": "utf-16",
+                "clear": [ps, "-NoProfile", "-Command", "Set-Clipboard -Value $null"],
+                "encoding": "utf-8",
             }
         if name == "win32":
             return None
@@ -120,6 +124,8 @@ def run_paste(b):
         b["paste"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30
     )
     text = proc.stdout.decode("utf-8", "replace").replace("\r\n", "\n")
+    if text.startswith("\ufeff"):
+        text = text[1:]  # a byte order mark added by the reader, not part of the clipboard text
     if b["name"].startswith("clip.exe") and text.endswith("\n"):
         text = text[:-1]
     return proc.returncode, text, proc.stderr.decode("utf-8", "replace")
@@ -159,7 +165,9 @@ def cmd_clip(args, ctx):
                 out(line)
             return 0
         if b["clear"]:
-            proc = subprocess.run(b["clear"], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=30)
+            proc = subprocess.run(
+                b["clear"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=30
+            )
             rc, stderr = proc.returncode, proc.stderr.decode("utf-8", "replace")
         else:
             rc, stderr = run_copy(b, "")
