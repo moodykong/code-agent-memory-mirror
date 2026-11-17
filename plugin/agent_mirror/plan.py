@@ -108,9 +108,22 @@ def leftover(name):
     )
 
 
+TEXT_PROBE = 8192
+TEXT_MAX = 16 << 20
+
+
 def file_digest(path):
+    """sha256 of a file's content. Text files are compared with CRLF read as LF: a skill checked out on
+    Windows (CRLF) and the same skill in the store (LF, as git normalizes it) are the same content.
+    A file counts as text when it has no NUL byte in its first 8 KiB and is at most 16 MiB."""
     h = hashlib.sha256()
     with open(path, "rb") as fh:
+        head = fh.read(TEXT_PROBE)
+        if b"\0" not in head and os.path.getsize(path) <= TEXT_MAX:
+            data = head + fh.read()
+            h.update(data.replace(b"\r\n", b"\n"))
+            return h.hexdigest()
+        h.update(head)
         for chunk in iter(lambda: fh.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
@@ -144,7 +157,11 @@ def summarize(path):
     if os.path.isfile(path):
         with open(path, "rb") as fh:
             data = fh.read()
-        h.update(b"F\0" + data)
+        if b"\0" not in data[:TEXT_PROBE]:
+            data_for_digest = data.replace(b"\r\n", b"\n")
+        else:
+            data_for_digest = data
+        h.update(b"F\0" + data_for_digest)
         return {
             "files": 1,
             "bytes": len(data),
@@ -435,6 +452,13 @@ class Plan:
                     reason = "cache folder"
                 elif not (e.is_symlink() or is_junction(e.path)) and not e.is_dir():
                     reason = "not a folder"
+                elif (
+                    e.is_dir()
+                    and not (e.is_symlink() or is_junction(e.path))
+                    and not os.path.isfile(os.path.join(e.path, "SKILL.md"))
+                    and any(True for _ in os.scandir(e.path))
+                ):
+                    reason = "has files but no SKILL.md (not a skill)"
                 if reason:
                     self.ignored.append({"path": tilde(e.path), "reason": reason})
                 else:

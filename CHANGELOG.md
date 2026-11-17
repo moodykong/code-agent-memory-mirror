@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1
+
+- Skill comparison reads CRLF as LF in text files, so a skill checked out on Windows and the same skill in the store (git keeps LF) no longer show as different. Binary files are still compared byte for byte. Found on the first real Windows plan, where 11 of 13 differing skills differed only in line endings.
+- A folder in a skills folder that has files but no SKILL.md is listed as "not a skill" and left alone.
+
 ## 0.3.0
 
 - Cloud setup scripts export AGENT_RUNTIME, because the vendor runs them before it sets its own session markers. Without it, install during setup looked like a developer machine and wrote a machine profile into the store, which every cloud sync then pushed and a developer machine held for review. Sync on a cloud runtime also leaves `machines/` out of its commits.
