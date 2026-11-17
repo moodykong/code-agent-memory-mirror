@@ -2,6 +2,8 @@
 
 ## 0.2.1
 
+- Verified on Claude Code on the web (2026-11): setup script timing, store clone by token at setup, user-level hooks written by the setup script, rclone box through the proxy (list, fetch, send), public companion repo cloned at setup, memory round trip through an inbox branch. Finding: inside a running session GitHub is reached only through the vendor proxy, so the store repo must be selected in the session; the Claude runbook now says so.
+
 - Safety: one resolver (`platforms.py`) for every home-like location. `AGENT_MIRROR_HOME` moves them all
   into one folder on every platform. With `AGENT_MIRROR_TEST_SANDBOX` set, every command exits with code
   97 when any location is outside the sandbox, and real schedulers and clipboard tools are never started.

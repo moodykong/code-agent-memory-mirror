@@ -227,3 +227,16 @@ The Claude memory folder slug also differs between the two homes, because the pr
 (`C:\Users\<you>\code\app` becomes `C--Users-<you>-code-app`, while `/home/<you>/code/app` becomes
 `-home-<you>-code-app` and `/mnt/c/Users/<you>/code/app` becomes `-mnt-c-Users-<you>-code-app`).
 Each home's install links its own slug folder to the same `memory/<project>/` in its own store clone.
+
+## Claude Code on the web: what a real session showed
+
+Checked in real sessions with an rclone box (2026-11):
+
+- The setup script runs as root with the project already cloned, has direct access to GitHub, and finished in seconds. It can clone a private store with a token and public repos without one.
+- A user settings file written by the setup script is honoured: the session-start hook ran and linked the memory folder.
+- Inside a running session all GitHub traffic goes through the vendor's proxy, which serves only the repos selected for that session. The token used at setup no longer applies. Select the store repo next to the project in every session, or the store cannot be pulled and memory cannot be pushed to the inbox branch.
+- A public repo that the user does not own cannot be selected. Clone it in the setup script and link it at session start.
+- The rclone box worked through the proxy: listing, fetching an archived folder, sending a file.
+- `box mount` is not possible there (no FUSE helper). Fetch on demand is the method.
+- With two repos selected the session starts in the folder above the clones; project discovery and the extra memory link for that folder worked.
+

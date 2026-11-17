@@ -11,6 +11,24 @@ from agent_mirror.recipes import plan
 
 SCHEMA = 1
 STEP_KINDS = ("network-hosts", "env-values", "setup-script", "first-session", "cleanup")
+
+
+def first_session_text(vendor, info):
+    """What to tell the user about starting the first session. Verified on Claude Code on the web: inside
+    a running session all GitHub traffic goes through the vendor's proxy, which serves only the repos
+    selected for that session. The token in the setup script works at setup time only. So the store
+    repo must be selected next to the project, or the session can neither pull the store nor push its
+    memory to the inbox branch."""
+    base = "Start a session and send the prompt below; read the output against the README notes."
+    if vendor == "claude":
+        return (
+            "Start a session with this environment and select TWO repos: the project and the store repo (%s). "
+            "The store must be selected in every session that should see current memory or write memory back: "
+            "once a session is running, GitHub is reached only through the vendor's proxy, which refuses repos "
+            "that are not selected, and the setup-script token no longer applies. Then send the prompt below; "
+            "read the output against the README notes." % info.get("store_repo", "your store")
+        )
+    return base
 PRODUCTS = {
     "claude": "Claude Code on the web (claude.ai/code)",
     "codex": "Codex cloud (newer VM product and legacy container product)",
@@ -113,7 +131,7 @@ def build(project, vendor, env, scripts, hosts, info):
             "kind": "first-session",
             "title": "First session",
             "prompt": PROBE_PROMPT,
-            "text": "Start a session and send the prompt below; read the output against the README notes.",
+            "text": first_session_text(vendor, info),
         }
     )
     steps.append(
