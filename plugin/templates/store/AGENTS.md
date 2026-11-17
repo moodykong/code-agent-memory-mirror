@@ -42,3 +42,4 @@ These apply when `agent-mirror detect` prints `claude-cloud` or `codex-cloud`.
 - The machine has little disk. Before a large fetch, check `agent-mirror box status` and free space with `agent-mirror box evict <path>` if needed. Fetch large data only when the task needs it.
 - The machine is thrown away after the session. Before finishing, upload anything worth keeping with `agent-mirror box send <path>`.
 - Run `agent-mirror sync` after writing a memory and again before finishing.
+- In a cloud session, `agent-mirror sync` pushes to an inbox branch of the store, not to its main branch. Memory reaches other machines after a developer machine syncs; changes to these instructions, skills or project settings made in a cloud session wait for the user's review (`agent-mirror review`).

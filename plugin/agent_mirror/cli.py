@@ -174,13 +174,47 @@ def build_parser():
     for box_parser in box.choices.values():
         box_parser.set_defaults(func=lazy("box", "cmd_box"))
 
-    s = sub.add_parser("cloud", parents=[common], help="render cloud environment settings into the store")
+    s = sub.add_parser("cloud", parents=[common], help="cloud environments: render, secrets, runbook")
     cloud = s.add_subparsers(dest="cloud_action", metavar="action")
     cloud.required = True
-    c = cloud.add_parser("render", parents=[common, dry], help="write projects/NAME/cloud/ in the store")
+    c = cloud.add_parser(
+        "render", parents=[common, dry], help="write projects/NAME/cloud/ (scripts, runbook) in the store"
+    )
     c.add_argument("--project", required=True, help="project name under projects/ in the store")
     c.add_argument("--vendor", choices=["claude", "codex", "all"], default="all", help="which vendor (default all)")
-    c.set_defaults(func=lazy("cloud", "cmd_cloud"))
+    c = cloud.add_parser(
+        "secrets", parents=[common], help="produce the environment values on this machine (--check or --out)"
+    )
+    c.add_argument("--project", required=True, help="project name under projects/ in the store")
+    c.add_argument("--vendor", choices=["claude", "codex"], default="claude", help="which vendor (default claude)")
+    how = c.add_mutually_exclusive_group(required=True)
+    how.add_argument("--check", action="store_true", help="show what can be produced now; never prints values")
+    how.add_argument("--out", metavar="FILE", help="write NAME=value lines to a new owner-only file outside any repo")
+    c.add_argument("--replace", action="store_true", help="with --out: overwrite an existing owner-only file")
+    c = cloud.add_parser("runbook", parents=[common], help="print the setup steps for a person (or --json)")
+    c.add_argument("--project", required=True, help="project name under projects/ in the store")
+    c.add_argument("--vendor", choices=["claude", "codex", "all"], default="all", help="which vendor (default all)")
+    c.add_argument("--json", action="store_true", help="print runbook.json instead")
+    for cloud_parser in cloud.choices.values():
+        cloud_parser.set_defaults(func=lazy("cloud", "cmd_cloud"))
+
+    s = sub.add_parser("review", parents=[common, timeout], help="review inbox branches pushed by cloud sessions")
+    s.add_argument(
+        "action",
+        nargs="?",
+        choices=["list", "show", "accept", "discard"],
+        default="list",
+        help="list (default), show BRANCH, accept BRANCH, discard BRANCH",
+    )
+    s.add_argument("branch", nargs="?", metavar="BRANCH", help="an inbox branch, with or without the inbox/ prefix")
+    s.add_argument("--paths", nargs="+", metavar="PATH", help="accept: only these held paths")
+    s.set_defaults(func=lazy("inbox", "cmd_review"))
+
+    s = sub.add_parser("clip", parents=[common], help="clipboard: copy FILE, check, clear (never prints secrets)")
+    s.add_argument("action", choices=["copy", "check", "clear"])
+    s.add_argument("file", nargs="?", metavar="FILE", help="copy: the file whose text goes on the clipboard")
+    s.add_argument("--secret", action="store_true", help="print only NAME and value length per line")
+    s.set_defaults(func=lazy("clip", "cmd_clip"))
     return parser
 
 

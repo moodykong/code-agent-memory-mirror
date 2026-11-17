@@ -10,6 +10,7 @@ import tempfile
 from agent_mirror.box.local import disk_guard, ensure_git_exclude, human
 from agent_mirror.box.rules import clean_rel
 from agent_mirror.box.sides import side_for
+from agent_mirror.envfile import quote_env_value, write_secret_file  # noqa: F401 (quote_env_value is re-exported)
 from agent_mirror.platforms import normalize_platform
 from agent_mirror.runtime import CLOUD_RUNTIMES
 from agent_mirror.util import err, expand, out, run, scrub, short, show_cmd, warn, within
@@ -201,57 +202,49 @@ def cmd_unmount(args, s, plat):
 
 # rclone-env -------------------------------------------------------------------------------------
 
-_PLAIN_ENV_VALUE = re.compile(r"^[A-Za-z0-9_./:@+,-]*$")
 
+def rclone_remote_values(name):
+    """([(variable, value)], [warnings], problem or None) for one rclone remote on this machine.
 
-def quote_env_value(value):
-    """Quote a value for a NAME=value line so that both a shell (`. file`) and a dotenv
-    parser read it back unchanged. An OAuth token is JSON, full of double quotes; written
-    bare, a shell strips those quotes and the token no longer parses."""
-    value = str(value)
-    if _PLAIN_ENV_VALUE.match(value):
-        return value
-    if "'" not in value and "\n" not in value:
-        return "'%s'" % value
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$").replace("`", "\\`")
-    return '"%s"' % escaped.replace("\n", "\\n")
-
-
-def cmd_rclone_env(args, ctx):
-    name = args.remote
+    Never prints a value. The problem is a sentence a person can act on.
+    """
     if not re.match(r"^[A-Za-z0-9_]+$", name):
-        err("remote name %r cannot be written as environment variables: use letters, digits and _ only" % name)
-        return 2
+        return (
+            [],
+            [],
+            "remote name %r cannot be written as environment variables: use letters, digits and _ only" % name,
+        )
     if not shutil.which("rclone"):
-        err("rclone is not installed or not on PATH")
-        return 1
+        return [], [], "rclone is not installed on this machine (https://rclone.org/install/)"
     rc, stdout, stderr = run(["rclone", "config", "dump"], timeout=60)
     if rc != 0:
-        err("rclone config dump failed: %s" % short(scrub(stderr) or "rc %s" % rc, 300))
-        return 1
+        return [], [], "rclone config dump failed: %s" % short(scrub(stderr) or "rc %s" % rc, 300)
     try:
         remotes = json.loads(stdout or "{}")
     except ValueError:
-        err("rclone config dump did not print JSON")
-        return 1
+        return [], [], "rclone config dump did not print JSON"
     remote = remotes.get(name)
     if remote is None:
         lowered = dict((k.lower(), k) for k in remotes)
         remote = remotes.get(lowered.get(name.lower(), ""))
     if not isinstance(remote, dict):
-        err("no rclone remote named %s in the local rclone config (`rclone listremotes` shows them)" % name)
-        return 1
-    lines, bad = [], []
+        return (
+            [],
+            [],
+            (
+                "no rclone remote named %s on this machine: run `rclone config`, create a remote named %s "
+                "of the same storage type as on the machine that set this up, then run this again" % (name, name)
+            ),
+        )
+    lines, warnings = [], []
     for key in sorted(remote):
         value = str(remote[key])
         if "\n" in value or "\r" in value or not re.match(r"^[A-Za-z0-9_]+$", key):
-            bad.append(key)
+            warnings.append("left out the setting %s: it cannot be one environment variable line" % key)
             continue
         lines.append(("RCLONE_CONFIG_%s_%s" % (name.upper(), key.upper()), value))
-    for key in bad:
-        warn("left out the setting %s: it cannot be one environment variable line" % key)
     if name != name.lower():
-        warn(
+        warnings.append(
             "a remote defined by these variables is named %s (lower case) on the other machine; use %s: "
             "in box.inbound_remote and box.outbound_remote there" % (name.lower(), name.lower())
         )
@@ -261,10 +254,21 @@ def cmd_rclone_env(args, ctx):
             expiry = json.loads(remote["token"]).get("expiry") or ""
         except (ValueError, AttributeError, TypeError):
             pass
-        warn(
+        warnings.append(
             "this remote uses an OAuth token. Stored in an environment variable it cannot be refreshed on a "
             "throwaway machine, so replace it before it expires%s" % (" (expiry %s)" % expiry if expiry else "")
         )
+    return lines, warnings, None
+
+
+def cmd_rclone_env(args, ctx):
+    name = args.remote
+    lines, warnings, problem = rclone_remote_values(name)
+    if problem:
+        err(problem)
+        return 2 if "cannot be written" in problem else 1
+    for w in warnings:
+        warn(w)
     if not args.out:
         out("variable names for remote %s (values not shown; add the names to env_var_names):" % name)
         for var, _ in lines:
@@ -276,18 +280,10 @@ def cmd_rclone_env(args, ctx):
     if store and within(os.path.realpath(path), store.root):
         err("refusing to write secrets into the store (%s); pick a file outside it" % store.root)
         return 2
-    if os.path.lexists(path):
-        err("%s already exists; remove it first (it is never overwritten)" % path)
+    problem = write_secret_file(path, lines)
+    if problem:
+        err(problem.replace(", or pass --replace to overwrite it", " (it is never overwritten)"))
         return 2
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        for var, value in lines:
-            fh.write("%s=%s\n" % (var, quote_env_value(value)))
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
     out("wrote %d variable(s) for remote %s to %s (owner-only; values not shown):" % (len(lines), name, path))
     for var, _ in lines:
         out("  " + var)

@@ -134,6 +134,25 @@ anything.
 - Windows (UNVERIFIED): needs WinFsp; `rclone mount` cannot run as a daemon there, so agent-mirror
   prints the command to run in its own window.
 
+## Clipboard (`clip`)
+
+`agent-mirror clip copy FILE`, `clip check` and `clip clear` pick the first backend that is present:
+
+| Where | Copy | Read back | Clear |
+| --- | --- | --- | --- |
+| Windows, and WSL when `clip.exe` and `powershell.exe` are on PATH | `clip.exe` (UTF-16 input) | PowerShell `Get-Clipboard -Raw` (UTF-8 output) | copy an empty text |
+| macOS | `pbcopy` | `pbpaste` | copy an empty text |
+| Linux with `WAYLAND_DISPLAY` | `wl-copy` | `wl-paste --no-newline` | `wl-copy --clear` |
+| Linux with `DISPLAY` | `xclip -selection clipboard` (then `xsel --clipboard`) | the same tool | empty text, or `xsel --clipboard --clear` |
+
+WSL is detected by `microsoft` in `/proc/version`; without the Windows tools on PATH it falls back to the
+Linux tools. With no backend, `clip` says what to install and exits with code 3.
+
+All of this is UNVERIFIED on real clipboards, on every platform including this Linux (WSL) machine: the
+tests use fake tools and injected platform names, because running the real tools here would overwrite the
+user's live Windows clipboard. Known risks: `clip.exe` and non-ASCII text, and PowerShell's output
+encoding when reading back.
+
 ## Two homes on one Windows PC (Windows plus WSL)
 
 A Windows PC with WSL has two separate home folders: the Windows one (`C:\Users\<you>`) used by

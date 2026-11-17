@@ -14,7 +14,8 @@ The store is a git repo you own (keep it private). It holds data only, never a p
   memory/<project>/MEMORY.md  memory index for one project
   memory/<project>/*.md       one memory per file
   projects/<project>/env.json the project's environment settings (see project-config.md)
-  projects/<project>/cloud/   files written by `agent-mirror cloud render`
+  projects/<project>/cloud/<vendor>/   files written by `agent-mirror cloud render`: setup scripts,
+                              allowed-hosts.txt, env-vars.txt, runbook.json and README.md
   projects/<project>/box_index.jsonl   written by `agent-mirror box index`
   projects/<project>/box_toc/<folder>.json[.gz]   tables of contents of archived folders, from `box index`
   projects/_example/env.json  a complete example; folders starting with "_" are ignored
@@ -28,7 +29,8 @@ The store is a git repo you own (keep it private). It holds data only, never a p
   "tool": {
     "repo": "https://github.com/moodykong/code-agent-memory-mirror",
     "ref": "main"
-  }
+  },
+  "cloud_push": "inbox"
 }
 ```
 
@@ -36,6 +38,75 @@ The store is a git repo you own (keep it private). It holds data only, never a p
 - `tool.repo`: where cloud setup scripts get agent-mirror from (a public https URL, no token).
 - `tool.ref`: the branch, tag or commit those scripts check out. Pin a tag or commit for stable
   cloud sessions; `cloud render` writes it into the scripts.
+- `cloud_push`: `"inbox"` (the default for new and adopted stores, and what agent-mirror assumes when the
+  key is missing) or `"main"` (the old behaviour: cloud sessions push straight to the main branch).
+  See "Inbox branches" below.
+
+## Inbox branches (`cloud_push: "inbox"`)
+
+A cloud session holds a token that can push to the store, so its pushes must not land on the main line.
+In a cloud session `agent-mirror sync` commits as usual and pushes to `refs/heads/inbox/<runtime>-<id>`
+on the store remote, where `<id>` is a short hash kept in the clone's `.git` folder, stable for the
+machine. It never pushes to the main branch. (The only forced push agent-mirror ever makes is to the
+machine's own inbox branch, after `session-start` rebased its unpushed commits onto a newer main.)
+
+On a developer machine, after the normal pull, `agent-mirror sync` fetches every `inbox/*` branch and:
+
+- applies changes under `memory/` to main: a new file is added; a changed file is taken when main has not
+  changed it since the branch started; `MEMORY.md` indexes are union-merged; when both sides changed the
+  same memory file, main's version stays and the branch's version is saved next to it as
+  `<stem>.from-<branch>.md` (not added to the index) and reported; a deletion is applied only when main
+  has not changed the file;
+- runs the secret scan on what it would apply, and applies nothing from a branch that trips it;
+- NEVER applies changes outside `memory/` (instructions, skills, projects, store.json, anything else):
+  they are reported as "held for review" with the branch and file names;
+- commits the applied changes as one commit per branch, pushes main, then deletes each branch whose
+  changes were all handled. Branches with held changes, a secret-scan hit or a kept deletion stay.
+
+`agent-mirror review list | show BRANCH | accept BRANCH [--paths ...] | discard BRANCH` handles held
+branches on a developer machine: `accept` applies the held paths onto main after showing them (and deletes
+the branch once all of them are accepted), `discard` deletes the remote branch. `doctor` lists inbox
+branches as of the last fetch.
+
+Why: a cloud session must not be able to change the instructions or runbooks that a local agent with real
+credentials will follow. The cost: memory written in one cloud session reaches other machines only after a
+developer machine syncs. The store token still needs write access, to push the inbox branch.
+
+## runbook.json
+
+`agent-mirror cloud render` writes `projects/<project>/cloud/<vendor>/runbook.json`; the README next to
+it is generated from the same data, and `agent-mirror cloud runbook --json` prints it.
+
+```json
+{
+  "schema": 1,
+  "tool": "agent-mirror 0.2.0",
+  "project": "my-project",
+  "vendor": "claude",
+  "product": "Claude Code on the web (claude.ai/code)",
+  "environment_name": "my-project",
+  "project_repo": "example-org/my-project",
+  "store_repo": "github.com/example-org/agent-store",
+  "tool_ref": "main",
+  "steps": [
+    {"kind": "network-hosts", "title": "...", "text": "...", "file": "allowed-hosts.txt", "hosts": ["github.com"]},
+    {"kind": "env-values", "title": "...", "text": "...", "file": "env-vars.txt",
+     "variables": [{"name": "EXAMPLE_API_TOKEN", "recipe": "local-file", "where": "env", "placeholder": null,
+                    "automatic": false, "instructions": null}],
+     "check_command": "agent-mirror cloud secrets --project my-project --vendor claude --check",
+     "values_command": "agent-mirror cloud secrets --project my-project --vendor claude --out <FILE outside any repo>"},
+    {"kind": "setup-script", "title": "...", "text": "...", "file": "setup.sh",
+     "placeholders": [{"placeholder": "<STORE_REPO_TOKEN>", "secret": "STORE_REPO_TOKEN", "instructions": "..."}]},
+    {"kind": "first-session", "title": "...", "text": "...", "prompt": "Run agent-mirror probe --full ..."},
+    {"kind": "cleanup", "title": "...", "text": "...", "items": ["delete the values file ...", "..."]}
+  ]
+}
+```
+
+Step kinds come from a fixed set: `network-hosts`, `env-values`, `setup-script`, `first-session`,
+`cleanup`. For Codex there are two `setup-script` steps, with `"product": "vm"` (`vm-install.sh`, also
+`vm-start-skill.md`) and `"product": "container"` (`container-setup.sh`, also `container-maintenance.sh`).
+A variable's `recipe` is `none` when no recipe covers it.
 
 ## Links that `install` makes
 
@@ -81,7 +152,8 @@ the project are added there too.
 
 ## What `sync` commits
 
-Only `memory/`, `skills/`, `AGENTS.md` and `CLAUDE.md`. Changes to `store.json` and `projects/`
+Only `memory/`, `skills/`, `AGENTS.md` and `CLAUDE.md` (in a cloud session with `cloud_push: "inbox"`,
+pushed to an inbox branch instead of main). Changes to `store.json` and `projects/`
 (including rendered cloud files, the box index and `box_toc/`) are committed by hand. Before committing, `sync` scans the changed
 files for key-shaped strings and refuses if it finds any (it prints the file and pattern names only).
 It never force-pushes; a rebase conflict is aborted and the local commit is kept.

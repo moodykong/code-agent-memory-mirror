@@ -176,6 +176,13 @@ if root and container:
             blobs.append({"name": name, "size": os.path.getsize(full), "modtime": "t", "stored": True})
     blobs.sort(key=lambda b: b["name"])
 
+if argv[:3] == ["keyvault", "secret", "show"]:
+    vault = json.loads(os.environ.get("FAKE_AZ_KEYVAULT", "{}"))
+    value = vault.get(opt("--name"))
+    if value is None:
+        sys.stderr.write("ERROR: SecretNotFound\n")
+        finish(3)
+    finish(0, value)
 if argv[:2] == ["account", "show"]:
     finish(int(os.environ.get("FAKE_AZ_ACCOUNT_SHOW_RC", "0")))
 if argv[:1] == ["login"]:

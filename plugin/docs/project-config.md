@@ -13,7 +13,8 @@ cloud vendor's settings page or in your local environment.
 | `dependency_sync` | one command | `session-start` (cloud), `probe --full` | Run in the project folder at cloud session start, e.g. `"uv sync --frozen"`. |
 | `memory_project` | text | `install`, `session-start`, `sync` | Folder name under `memory/` for this project (default: the project name). |
 | `allowed_hosts` | list of host names | `cloud render` | Hosts the cloud network must allow; joined with the hosts agent-mirror itself needs. |
-| `env_var_names` | list of names | `probe`, `cloud render` | Environment variables the project needs. `probe` reports which are set (never values); `cloud render` writes the paste-ready name list. |
+| `env_var_names` | list of names | `probe`, `cloud render`, `cloud secrets` | Environment variables the project needs. `probe` reports which are set (never values); `cloud render` writes the paste-ready name list. |
+| `secrets` | list of recipe entries | `cloud secrets`, `cloud render`, `cloud runbook`, `doctor` | How each value in `env_var_names` is produced on a machine, never the value itself. See "Secret recipes" below. |
 | `setup_commands` | list of shell lines | `cloud render` | Extra lines for the cloud setup scripts (for example installing a cloud CLI). Each runs in a subshell and may fail without stopping the script. agent-mirror never runs them itself. |
 | `session_start_commands` | list of commands | `session-start` (cloud) | Run in the project folder after `dependency_sync` on a cloud runtime (for example a sign-in script kept in the store). |
 | `box` | object | `box`, `doctor`, `probe --full`, `cloud render` | Where bulk files go. See below. |
@@ -31,6 +32,45 @@ agent-mirror never passes these to a shell, so they work the same on Linux, macO
   Windows paths survive). A leading `~` is expanded.
 
 `setup_commands` are different: they are pasted into bash setup scripts as written.
+
+## Secret recipes (`secrets`)
+
+A second machine should be able to set up a cloud environment from the store alone. The store says where
+each value comes from; `agent-mirror cloud secrets` produces the values on the machine you run it on.
+Only these recipe types exist. Anything else is rejected with a clear error, and no free-form command from
+the store is ever run.
+
+| Recipe | Shape | Produces |
+| --- | --- | --- |
+| `rclone-remote` | `{"recipe": "rclone-remote", "remote": "NAME"}` | every `RCLONE_CONFIG_<NAME>_*` variable from this machine's rclone config (as `box rclone-env` does). A missing remote becomes "needs you: run `rclone config`, create a remote named NAME of the same storage type". |
+| `local-file` | `{"recipe": "local-file", "path": "~/...", "names": ["A", "B"]}` | the listed names from `NAME=value` lines in an owner-only file on this machine (`export ` and quotes allowed). A missing file, a file others can read, or a missing name becomes "needs you". |
+| `env` | `{"recipe": "env", "names": ["A"]}` | the values from the current process environment. |
+| `literal` | `{"recipe": "literal", "name": "X", "value": "..."}` | a non-secret constant, for example a runtime marker or a tenant id. A value that matches the secret-scan patterns is refused. |
+| `azure-keyvault` | `{"recipe": "azure-keyvault", "vault": "V", "secrets": {"VAR_NAME": "secret-name"}}` | `az keyvault secret show --vault-name V --name secret-name --query value -o tsv`; the value is captured and never printed. `az` missing or failing becomes "needs you". |
+| `ask-user` | `{"recipe": "ask-user", "name": "X", "where": "env" or "setup-script", "placeholder": "<X>", "instructions": "..."}` | nothing: only the user can create it (a token, say). With `"where": "setup-script"` the value replaces the placeholder in the setup script on the vendor page and never goes into a values file. |
+
+Automatic entries, added even when the config does not list them:
+
+- Claude: `STORE_REPO_TOKEN`, `ask-user` with `"where": "setup-script"` and placeholder `<STORE_REPO_TOKEN>`
+  (the store token in `setup.sh`).
+- Codex: `AGENT_RUNTIME` as the literal `codex-cloud`, and `STORE_REPO_TOKEN` as `ask-user` (the
+  setup-only secret of the legacy container product).
+
+Every variable in `env_var_names` (plus the Azure sign-in names an `azure-blob` box adds) should be
+covered by a recipe. `doctor` and `cloud render` warn about names no recipe covers, and about recipe
+names that `env_var_names` does not list.
+
+- `agent-mirror cloud secrets --project NAME [--vendor claude|codex] --check` prints, for each variable,
+  its recipe and whether this machine can produce it now: `ready`, `ask the user (...)` or
+  `needs you: <instruction>`. It never prints a value. Exit code 0 when everything is ready or only
+  `ask-user` items remain, 3 when something else is missing.
+- `... --out FILE` writes `NAME=value` lines (quoted so a shell and a dotenv reader both read them back)
+  for every value it can produce to a new file readable only by you. It refuses a path inside the store,
+  inside any git work tree, or an existing file (`--replace` overwrites an existing owner-only file). It
+  prints names and value lengths only, lists what still needs you, and reminds you to delete the file
+  after pasting. `agent-mirror clip copy FILE --secret` puts the file on the clipboard without printing it.
+- `agent-mirror cloud runbook --project NAME [--vendor claude|codex|all] [--json]` prints the setup
+  steps for a person, or the runbook JSON (see store-layout.md).
 
 ## Sessions above several clones
 
@@ -231,6 +271,12 @@ A cloud machine has no rclone config file. rclone also reads a remote from envir
   "memory_project": "my-project",
   "allowed_hosts": ["api.example.com", "*.blob.core.windows.net"],
   "env_var_names": ["EXAMPLE_API_TOKEN", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "AZURE_TENANT_ID"],
+  "secrets": [
+    {"recipe": "local-file", "path": "~/.secrets/my-project.env", "names": ["EXAMPLE_API_TOKEN"]},
+    {"recipe": "env", "names": ["AZURE_CLIENT_ID"]},
+    {"recipe": "azure-keyvault", "vault": "my-key-vault", "secrets": {"AZURE_CLIENT_SECRET": "agent-client-secret"}},
+    {"recipe": "literal", "name": "AZURE_TENANT_ID", "value": "00000000-0000-0000-0000-000000000000"}
+  ],
   "setup_commands": ["apt-get install -y -qq jq"],
   "session_start_commands": ["{store}/projects/my-project/cloud-login.sh"],
   "box": {

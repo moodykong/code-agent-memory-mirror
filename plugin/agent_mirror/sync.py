@@ -12,10 +12,11 @@ import socket
 import sys
 import time
 
+from agent_mirror.inbox import delete_branch, process_inbox, push_to_inbox, upstream_parts
 from agent_mirror.install import merge_tree
 from agent_mirror.links import is_linklike
 from agent_mirror.platforms import claude_slug, pid_alive
-from agent_mirror.runtime import detect_runtime
+from agent_mirror.runtime import CLOUD_RUNTIMES, detect_runtime
 from agent_mirror.util import err, git, is_git_toplevel, out, short, tilde, upstream, warn
 
 SYNC_PATHS = ("memory", "AGENTS.md", "CLAUDE.md", "skills")
@@ -195,11 +196,14 @@ def _sync(args, ctx, store, timeout, gitdir):
         return 3
     out("secret scan: %d changed files clean" % len(files))
     runtime = detect_runtime()
+    to_inbox = runtime in CLOUD_RUNTIMES and store.cloud_push() == "inbox"
     message = args.message or "memory: sync from %s %s" % (runtime, socket.gethostname())
     if dry:
         if files:
             out("would commit %d files with message: %s" % (len(files), message))
-        out("would run: git pull --rebase --autostash, then git push (if ahead)")
+        if to_inbox:
+            return push_to_inbox(root, gitdir, runtime, timeout, dry_run=True)
+        out("would run: git pull --rebase --autostash, apply inbox branches, then git push (if ahead)")
         return 0
     if files:
         rc, _, stderr = git(root, ["add", "-A", "--"] + paths, timeout)
@@ -219,6 +223,8 @@ def _sync(args, ctx, store, timeout, gitdir):
             out("committed: %s" % message)
     else:
         out("nothing new to commit")
+    if to_inbox:
+        return push_to_inbox(root, gitdir, runtime, timeout, dry_run=False)
     up = upstream(root, timeout)
     if not up:
         warn("the store has no upstream branch; the commit stays local (push once by hand with -u)")
@@ -232,13 +238,21 @@ def _sync(args, ctx, store, timeout, gitdir):
         else:
             warn("pull --rebase failed (%s); the local commit is kept, nothing pushed" % short(stderr or "no output"))
         return 0
+    remote, _ = upstream_parts(root, timeout)
+    done = process_inbox(root, remote, timeout) if (remote and runtime not in CLOUD_RUNTIMES) else []
+    pushed = True
     rc, ahead, _ = git(root, ["rev-list", "--count", "@{u}..HEAD"], timeout)
     if rc == 0 and ahead.strip() not in ("", "0"):
         rc, _, stderr = git(root, ["push", "--quiet"], timeout)
         if rc != 0:
+            pushed = False
             warn("push failed (%s); the commit stays local, run sync again later" % short(stderr or "no output"))
         else:
             out("pushed %s commit(s) to %s" % (ahead.strip(), up))
     else:
         out("already in sync with %s" % up)
+    if pushed:
+        for name in done:
+            if delete_branch(root, remote, name, timeout):
+                out("deleted %s: everything on it was applied" % name)
     return 0

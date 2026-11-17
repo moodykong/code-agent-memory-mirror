@@ -123,6 +123,11 @@ class Store:
     def tool_repo(self):
         return str((self.meta().get("tool") or {}).get("repo") or TOOL_REPO)
 
+    def cloud_push(self):
+        """Where cloud sessions push: 'inbox' (the default, also when store.json does not say) or 'main'."""
+        value = str(self.meta().get("cloud_push") or "inbox").strip().lower()
+        return value if value in ("inbox", "main") else "inbox"
+
     def tool_ref(self):
         return str((self.meta().get("tool") or {}).get("ref") or DEFAULT_REF)
 

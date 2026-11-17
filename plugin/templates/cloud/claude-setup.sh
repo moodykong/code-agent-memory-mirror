@@ -3,7 +3,8 @@
 # Project: @@PROJECT@@ (@@PROJECT_REPO@@)
 # Rendered by `agent-mirror cloud render` from projects/@@PROJECT@@/env.json; re-render instead of editing.
 # Paste the whole file into the environment's "Setup script" box, then replace
-# <STORE_REPO_TOKEN> with a fine-grained token that can read and write ONLY the store repo.
+# <STORE_REPO_TOKEN> with a fine-grained token that can read and write ONLY the store repo
+# (write access lets `agent-mirror sync` push memory to an inbox branch; it never pushes to main).
 # Every step is allowed to fail; the script always exits 0.
 STORE="$HOME/agent-mirror-store"
 @@PRELUDE@@

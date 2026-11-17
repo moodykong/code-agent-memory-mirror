@@ -3,10 +3,11 @@
 import os
 import shutil
 
-from agent_mirror import PLUGIN_ROOT, __version__
+from agent_mirror import PLUGIN_ROOT, __version__, recipes
 from agent_mirror.box import describe_box
 from agent_mirror.config import config_projects
 from agent_mirror.hooks import status_line
+from agent_mirror.inbox import held_summary, upstream_parts
 from agent_mirror.install import Installer, link_state, memory_link_path
 from agent_mirror.links import describe
 from agent_mirror.projects import discover_projects
@@ -101,4 +102,28 @@ def cmd_doctor(args, ctx):
             out("    " + line)
         for p in problems:
             out("    PROBLEM  %s" % p)
+    out("secrets (recipes in env.json):")
+    for name in names:
+        env = store.load_env(name)
+        probs = recipes.problems(env)
+        warns = [] if probs else sorted(set(w for v in ("claude", "codex") for w in recipes.coverage_warnings(env, v)))
+        count = len(recipes.entries(env))
+        out("  %s: %d recipe(s)%s" % (name, count, "" if (probs or warns) else ", every variable covered"))
+        for p in probs:
+            out("    PROBLEM  %s" % p)
+        for w in warns:
+            out("    warning  %s" % w)
+    out("inbox (cloud pushes, as of the last fetch; store.json cloud_push: %s):" % store.cloud_push())
+    remote, _ = upstream_parts(store.root, args.timeout)
+    waiting = held_summary(store.root, remote, args.timeout) if remote else []
+    if not waiting:
+        out("  no inbox branches")
+    for branch, held, memory in waiting:
+        if held:
+            out(
+                "  HELD       %s: %d memory change(s); held for review: %s (agent-mirror review show %s)"
+                % (branch, memory, ", ".join(held), branch)
+            )
+        else:
+            out("  WAITING    %s: %d memory change(s); the next sync applies them" % (branch, memory))
     return 0

@@ -58,7 +58,7 @@ def placement_problem(ctx, path):
 
 
 def default_meta():
-    return {"schema": STORE_SCHEMA, "tool": {"repo": TOOL_REPO, "ref": DEFAULT_REF}}
+    return {"schema": STORE_SCHEMA, "tool": {"repo": TOOL_REPO, "ref": DEFAULT_REF}, "cloud_push": "inbox"}
 
 
 def record_in_config(ctx, path, remote, dry_run):
@@ -161,6 +161,13 @@ def adopt(ctx, path, args):
             warn(
                 "store.json schema %d is newer than this agent-mirror understands (%d)" % (meta["schema"], STORE_SCHEMA)
             )
+        if "cloud_push" not in meta:
+            if args.dry_run:
+                out('would add "cloud_push": "inbox" to %s' % meta_path)
+            else:
+                meta["cloud_push"] = "inbox"
+                write_text(meta_path, dump_json(meta))
+                out('added "cloud_push": "inbox" to %s: cloud sessions push to inbox branches (commit it)' % meta_path)
     elif args.dry_run:
         out("would write %s" % meta_path)
     else:

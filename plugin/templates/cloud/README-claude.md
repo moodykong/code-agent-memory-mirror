@@ -3,24 +3,14 @@
 Rendered by `agent-mirror cloud render --project @@PROJECT@@` from
 `projects/@@PROJECT@@/env.json`. Re-render after changing that file; do not edit these files by hand.
 Items marked UNVERIFIED have not been proven on a real cloud machine; `agent-mirror probe --full` checks them.
+The same steps are in `runbook.json` (machine-readable) and `agent-mirror cloud runbook --project @@PROJECT@@`.
 
-## Steps
-
-1. Make a fine-grained GitHub token that can read and write ONLY the store repo
-   (`@@STORE_REPO_PATH@@`, Contents: read and write, so `agent-mirror sync` can push).
-   The token ends up in the store clone's `.git/config` on the throwaway machine, where the
-   agent can read it. That is why it must be limited to the store repo.
-2. Open the environment for `@@PROJECT_REPO@@` on claude.ai/code.
-3. Setup script: paste `setup.sh`, then replace `<STORE_REPO_TOKEN>` with the token
-   on the settings page. Never put the token in the store.
-4. Network: allow every host in `allowed-hosts.txt`.
-5. Environment variables: add every name in `env-vars.txt` and fill in the values on the
-   settings page. The store only ever holds the names.
-6. Start a session and ask the agent to run `agent-mirror probe --full` and show the output.
+@@STEPS@@
 
 ## What the setup script does
 
-- Clones the store to `~/agent-mirror-store` with the token.
+- Clones the store to `~/agent-mirror-store` with the token. The token needs write access because cloud
+  sessions push memory to an inbox branch of the store (never to the main branch); see "Inbox" below.
 - Checks out agent-mirror (`@@TOOL_REPO@@`) at the ref the store pins in `store.json`
   (`@@TOOL_REF@@`) to `~/code-agent-memory-mirror`, and links it onto PATH.
 @@PYTHON_LINE@@
@@ -44,4 +34,6 @@ Items marked UNVERIFIED have not been proven on a real cloud machine; `agent-mir
   left alone. Claude keys memory to the folder the session runs in: with exactly one matching project that
   folder's memory is linked too; with several, the agent is given each project's memory index path to read
   (UNVERIFIED how Claude picks the folder in that case).
+
+@@INBOX_NOTE@@
 @@BOX_NOTE@@

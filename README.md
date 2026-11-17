@@ -44,8 +44,7 @@ agent-mirror timer install     # optional: sync every 30 minutes
 agent-mirror doctor            # what is linked, what is not
 ```
 
-On another machine: clone the store, run `agent-mirror init-store ~/agent-store --adopt`, then
-`agent-mirror install`. To undo everything: `agent-mirror hooks uninstall`, `agent-mirror timer
+On another machine, see "Join a second machine" below. To undo everything: `agent-mirror hooks uninstall`, `agent-mirror timer
 uninstall` and `agent-mirror uninstall` (it puts back whatever the links replaced).
 
 Windows (UNVERIFIED): clone the repo, add `...\code-agent-memory-mirror\plugin\bin` to `PATH` (it holds
@@ -60,6 +59,26 @@ The skill: in Claude Code, `/plugin marketplace add moodykong/code-agent-memory-
 `plugin/.codex-plugin/plugin.json`. Installing the plugin does not register any hooks by itself:
 hooks commit and push your store, so they start only when you run `agent-mirror hooks install`
 (which is also what the cloud setup scripts do).
+
+## Join a second machine
+
+The store carries everything a machine needs to know, including a declarative runbook for each cloud
+environment, but never secret values. On a second machine:
+
+```bash
+git clone https://github.com/moodykong/code-agent-memory-mirror ~/code-agent-memory-mirror
+ln -s ~/code-agent-memory-mirror/plugin/bin/agent-mirror ~/.local/bin/agent-mirror
+git clone git@github.com:you/agent-store.git ~/agent-store
+agent-mirror init-store ~/agent-store --adopt          # writes the user config on this machine
+agent-mirror install --dry-run && agent-mirror install  # optional: link the agents here too
+agent-mirror cloud secrets --project my-project --check # which values this machine can produce
+agent-mirror cloud runbook --project my-project         # the steps to set up the cloud environment
+```
+
+`cloud secrets --check` names each value's recipe (an rclone remote, an owner-only local file, the
+environment, a key vault, a constant, or something only you can create) and says what this machine still
+needs. `cloud secrets --out FILE` then writes the values to an owner-only file outside any repo, to paste
+on the vendor's settings page.
 
 ## Commands
 
@@ -81,7 +100,11 @@ hooks commit and push your store, so they start only when you run `agent-mirror 
 | `box receive [--into DIR]` | download the agents' results from the outbound side (developer machine) |
 | `box mount\|unmount [--cache-max-size 10G]` | rclone: mount the inbound side read-only with a capped cache (needs FUSE) |
 | `box rclone-env --remote NAME [--out FILE]` | turn a local rclone remote into `RCLONE_CONFIG_*` variables for a cloud machine |
-| `cloud render --project NAME [--vendor claude\|codex\|all]` | write paste-ready setup scripts, host list, variable names and steps for Claude cloud and Codex cloud into the store |
+| `cloud render --project NAME [--vendor claude\|codex\|all]` | write paste-ready setup scripts, host list, variable names, `runbook.json` and steps for Claude cloud and Codex cloud into the store |
+| `cloud secrets --project NAME [--vendor claude\|codex] (--check \| --out FILE [--replace])` | produce the environment's values on this machine from the recipes in env.json; never prints a value |
+| `cloud runbook --project NAME [--vendor V] [--json]` | print the setup steps for a person, or the runbook JSON |
+| `review [list \| show BRANCH \| accept BRANCH [--paths ...] \| discard BRANCH]` | handle inbox branches pushed by cloud sessions (developer machines only) |
+| `clip copy FILE [--secret]`, `clip check [--secret]`, `clip clear` | put text on the clipboard and check it without printing secrets |
 
 A session may run inside one clone or in a folder above several clones: `session-start`, `doctor` and
 `probe` scan child folders for git repos and set up every repo whose origin matches a project in the
@@ -130,7 +153,17 @@ kept out of the bundle and fetched only when named. Settings and rules:
   a project repo, inside this program, or inside an agent home folder.
 - Nothing is deleted without a backup: anything a link replaces is moved to
   `~/.agent-mirror-backups/<timestamp>/` with a manifest that `uninstall` uses to put it back.
-- Never force push. A rebase conflict is aborted and the local commit is kept.
+- Never force push to the main branch. A rebase conflict is aborted and the local commit is kept.
+- Cloud sessions push to an inbox branch, never to the main branch (`"cloud_push": "inbox"` in store.json,
+  the default). A developer machine's `sync` applies memory from those branches automatically and holds
+  every other change (instructions, skills, project settings, runbooks) for `agent-mirror review`. Why: a
+  cloud session must not be able to change the instructions or runbooks that a local agent with real
+  credentials will follow. The cost: memory written in one cloud session reaches other machines only after
+  a developer machine syncs. The store token in cloud sessions still needs write access, to push the inbox
+  branch.
+- Project config names where each secret comes from (fixed recipe types only; no command from the store is
+  ever run), never the value. `cloud secrets --out` and `box rclone-env --out` write owner-only files and
+  refuse paths inside the store or any git work tree.
 - The box never deletes remote files unless you pass `--delete`, never overwrites local files on a
   local runtime, refuses `box push` and `box receive` on a cloud runtime, and refuses `.env` files.
   `box evict` deletes only files recorded as fetched from the box and unchanged since, and only on a
@@ -148,6 +181,7 @@ kept out of the bundle and fetched only when named. Settings and rules:
 | Periodic sync | systemd user timer | launchd agent | schtasks |
 | Launcher | `plugin/bin/agent-mirror` | `plugin/bin/agent-mirror` | `plugin/bin/agent-mirror.cmd` |
 | `box mount` | FUSE (`fuse3`); UNVERIFIED on cloud machines | macFUSE, UNVERIFIED | WinFsp, UNVERIFIED |
+| `clip` | wl-clipboard, xclip or xsel (UNVERIFIED); WSL: clip.exe and PowerShell (UNVERIFIED) | pbcopy and pbpaste, UNVERIFIED | clip.exe and PowerShell, UNVERIFIED |
 
 Every macOS and Windows assumption is listed in [plugin/docs/platforms.md](plugin/docs/platforms.md),
 together with the case of one Windows PC with WSL (two homes, two installs, one store remote).

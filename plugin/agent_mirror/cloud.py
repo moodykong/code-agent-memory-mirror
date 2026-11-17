@@ -6,10 +6,12 @@ secret variable (Codex legacy container), environment variables are names
 only, and any credentials in the store's remote URL are dropped.
 """
 
+import json
 import os
 import re
 
-from agent_mirror import PLUGIN_ROOT
+from agent_mirror import PLUGIN_ROOT, recipes, runbook
+from agent_mirror.envfile import placement_problem, write_secret_file
 from agent_mirror.util import err, out, read_text, run, tilde, warn, write_text
 
 TEMPLATES = os.path.join(PLUGIN_ROOT, "templates", "cloud")
@@ -205,35 +207,109 @@ def render(ctx, store, project, vendors):
         else "- Runs no extra setup commands (env.json has no `setup_commands`)."
     )
     values["BOX_NOTE"] = box_note(box)
-    files = {}
+    values["INBOX_NOTE"] = inbox_note(store)
+    hosts = hosts_for(env, host, box)
+    info = {
+        "project_repo": values["PROJECT_REPO"],
+        "store_repo": values["STORE_REPO_PATH"],
+        "store_name": store_name,
+        "tool_ref": ref,
+    }
+    files, books = {}, {}
     if "claude" in vendors:
-        files["claude/setup.sh"] = fill(template("claude-setup.sh"), values)
-        files["claude/allowed-hosts.txt"] = "\n".join(hosts_for(env, host, box)) + "\n"
+        scripts = {"setup.sh": fill(template("claude-setup.sh"), values)}
+        book = runbook.build(project, "claude", env, scripts, hosts, info)
+        books["claude"] = book
+        files["claude/setup.sh"] = scripts["setup.sh"]
+        files["claude/allowed-hosts.txt"] = "\n".join(hosts) + "\n"
         files["claude/env-vars.txt"] = "\n".join(env_names_for(env, "claude", box)) + "\n"
-        files["claude/README.md"] = fill(template("README-claude.md"), values)
+        files["claude/runbook.json"] = json.dumps(book, indent=2) + "\n"
+        files["claude/README.md"] = fill(template("README-claude.md"), dict(values, STEPS=runbook.steps_markdown(book)))
     if "codex" in vendors:
-        files["codex/vm-install.sh"] = fill(template("codex-vm-install.sh"), values)
+        scripts = {
+            "vm-install.sh": fill(template("codex-vm-install.sh"), values),
+            "container-setup.sh": fill(template("codex-container-setup.sh"), values),
+        }
+        book = runbook.build(project, "codex", env, scripts, hosts, info)
+        books["codex"] = book
+        files["codex/vm-install.sh"] = scripts["vm-install.sh"]
         files["codex/vm-start-skill.md"] = fill(template("codex-vm-start-skill.md"), values)
-        files["codex/container-setup.sh"] = fill(template("codex-container-setup.sh"), values)
+        files["codex/container-setup.sh"] = scripts["container-setup.sh"]
         files["codex/container-maintenance.sh"] = fill(template("codex-container-maintenance.sh"), values)
-        files["codex/allowed-hosts.txt"] = "\n".join(hosts_for(env, host, box)) + "\n"
+        files["codex/allowed-hosts.txt"] = "\n".join(hosts) + "\n"
         files["codex/env-vars.txt"] = "\n".join(env_names_for(env, "codex", box)) + "\n"
-        files["codex/README.md"] = fill(template("README-codex.md"), values)
-    return files
+        files["codex/runbook.json"] = json.dumps(book, indent=2) + "\n"
+        files["codex/README.md"] = fill(template("README-codex.md"), dict(values, STEPS=runbook.steps_markdown(book)))
+    return files, books
 
 
-def cmd_cloud(args, ctx):
+def inbox_note(store):
+    mode = store.cloud_push()
+    if mode == "main":
+        return (
+            "\n## Pushes from cloud sessions\n\n"
+            'store.json has `"cloud_push": "main"`: `agent-mirror sync` in a cloud session pushes straight to the\n'
+            'store\'s main branch. Consider `"inbox"`, so that a cloud session cannot change the instructions or\n'
+            "runbooks that a local agent with real credentials will follow.\n"
+        )
+    return (
+        "\n## Inbox (why the token can push, but never to the main branch)\n\n"
+        'With `"cloud_push": "inbox"` in store.json (the default), `agent-mirror sync` in a cloud session pushes\n'
+        "its commits to a branch `inbox/<runtime>-<machine id>` of the store, never to the main branch. The next\n"
+        "`agent-mirror sync` on a developer machine applies the memory changes from those branches and holds\n"
+        "everything else (instructions, skills, project settings) for `agent-mirror review`. A cloud session\n"
+        "must not be able to change the instructions or runbooks that a local agent with real credentials will\n"
+        "follow. The cost: memory written in one cloud session reaches other machines only after a developer\n"
+        "machine syncs.\n"
+    )
+
+
+def project_env(ctx, project):
     store = ctx.require_store()
-    project = args.project
     if not os.path.isfile(store.env_path(project)):
         err(
             "no %s; make projects/%s/env.json first (copy projects/_example/env.json)"
             % (store.env_path(project), project)
         )
+        return store, None
+    env = store.load_env(project)
+    probs = recipes.problems(env)
+    if probs:
+        for p in probs:
+            err("%s (in projects/%s/env.json)" % (p, project))
+        return store, None
+    return store, env
+
+
+def render_checked(ctx, store, project, vendors):
+    files, books = render(ctx, store, project, vendors)
+    env = store.load_env(project)
+    for vendor in vendors:
+        for w in recipes.coverage_warnings(env, vendor):
+            warn("%s: %s" % (vendor, w))
+        for step in books[vendor]["steps"]:
+            for p in step.get("placeholders", []):
+                if not p["secret"]:
+                    warn(
+                        "%s: %s holds the placeholder %s, but no ask-user recipe names it"
+                        % (vendor, step["file"], p["placeholder"])
+                    )
+    return files, books
+
+
+def cmd_cloud(args, ctx):
+    action = getattr(args, "cloud_action", "render")
+    if action == "secrets":
+        return cmd_cloud_secrets(args, ctx)
+    if action == "runbook":
+        return cmd_cloud_runbook(args, ctx)
+    project = args.project
+    store, env = project_env(ctx, project)
+    if env is None:
         return 2
     vendors = ["claude", "codex"] if args.vendor == "all" else [args.vendor]
     try:
-        files = render(ctx, store, project, vendors)
+        files, _ = render_checked(ctx, store, project, vendors)
     except ValueError as exc:
         err(str(exc))
         return 2
@@ -258,3 +334,75 @@ def cmd_cloud(args, ctx):
             % (tilde(os.path.join(root, vendors[0], "README.md")), project)
         )
     return 0
+
+
+def cmd_cloud_runbook(args, ctx):
+    store, env = project_env(ctx, args.project)
+    if env is None:
+        return 2
+    vendors = ["claude", "codex"] if args.vendor == "all" else [args.vendor]
+    try:
+        _, books = render(ctx, store, args.project, vendors)
+    except ValueError as exc:
+        err(str(exc))
+        return 2
+    if args.json:
+        data = books[vendors[0]] if len(vendors) == 1 else [books[v] for v in vendors]
+        out(json.dumps(data, indent=2))
+        return 0
+    out("\n\n".join(runbook.steps_text(books[v]) for v in vendors))
+    return 0
+
+
+def cmd_cloud_secrets(args, ctx):
+    store, env = project_env(ctx, args.project)
+    if env is None:
+        return 2
+    vendor = args.vendor
+    for w in recipes.coverage_warnings(env, vendor):
+        warn(w)
+    items = recipes.produce(env, vendor)
+    ready = [it for it in items if it.status == "ready"]
+    needs = [it for it in items if it.status == "needs"]
+    asks = [it for it in items if it.status == "ask"]
+    if args.check:
+        out("values for %s (%s) as this machine can produce them now; values are never shown:" % (args.project, vendor))
+        width = max([len(it.name) for it in items] + [10])
+        for it in items:
+            if it.status == "ready":
+                state = "ready"
+            elif it.status == "ask":
+                where = (
+                    ("replaces %s in the setup script" % it.placeholder) if it.where == "setup-script" else "env value"
+                )
+                state = "ask the user (%s)%s" % (where, ": " + it.instruction if it.instruction else "")
+            else:
+                state = "needs you: " + it.instruction
+            out("  %-*s  %-15s %s" % (width, it.name, it.recipe, state))
+        out("summary: %d ready, %d need you, %d for the user to create" % (len(ready), len(needs), len(asks)))
+        return 3 if needs else 0
+    path = os.path.abspath(os.path.expanduser(args.out))
+    problem = placement_problem(path, store.root)
+    if problem:
+        err(problem)
+        return 2
+    pairs = [(it.name, it.value) for it in ready if not (it.recipe == "ask-user")]
+    problem = write_secret_file(path, pairs, replace=args.replace)
+    if problem:
+        err(problem)
+        return 2
+    out("wrote %d value(s) to %s (owner-only); names and value lengths:" % (len(pairs), path))
+    for name, value in pairs:
+        out("  %s (%d characters)" % (name, len(str(value))))
+    for it in needs:
+        out("still needs you: %s: %s" % (it.name, it.instruction))
+    for it in asks:
+        where = (
+            ("replace %s in the setup script" % it.placeholder) if it.where == "setup-script" else "add as an env value"
+        )
+        out("for the user to create: %s (%s)%s" % (it.name, where, ": " + it.instruction if it.instruction else ""))
+    out(
+        "paste the values on the environment's settings page (agent-mirror clip copy %s --secret), then delete %s"
+        % (path, path)
+    )
+    return 3 if needs else 0

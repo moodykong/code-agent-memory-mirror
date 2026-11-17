@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.2.0
+
+- Secret recipes: `"secrets"` in a project's env.json names where each environment value comes from
+  (`rclone-remote`, `local-file`, `env`, `literal`, `azure-keyvault`, `ask-user`), never the value. Other
+  recipe types are rejected; no command from the store is ever run. `doctor` and `cloud render` warn about
+  variables no recipe covers.
+- `agent-mirror cloud secrets --check | --out FILE [--replace]`: produce the values on this machine, write
+  them to an owner-only file outside the store and any git work tree, print names and lengths only.
+- `cloud render` also writes `runbook.json` per vendor (network hosts, env values with their recipes, setup
+  script placeholders, first-session prompt, cleanup); the README is generated from it.
+  `agent-mirror cloud runbook [--json]` prints it.
+- Inbox branches: with `"cloud_push": "inbox"` (the default for new and adopted stores) cloud sessions push
+  to `inbox/<runtime>-<id>`, never to the main branch. A developer machine's `sync` applies memory changes
+  (union-merged indexes, side files on conflicts, secret scan) and holds everything else for
+  `agent-mirror review list | show | accept | discard`. `doctor` reports held branches. Cloud
+  `session-start` pulls main with a rebase.
+- `agent-mirror clip copy | check | clear`: clipboard hand-off without printing secrets (Windows and WSL,
+  macOS, Wayland, X11).
+- README: "Join a second machine".
+
 ## 0.1.0
 
 First public version.

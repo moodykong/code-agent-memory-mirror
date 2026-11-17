@@ -68,11 +68,19 @@ def pull_store(store, timeout, dry_run):
     if not up:
         warn("the store has no upstream branch; skipped the pull")
         return
+    cloud = detect_runtime() in CLOUD_RUNTIMES
+    how = ["pull", "--rebase", "--autostash", "--quiet"] if cloud else ["pull", "--ff-only", "--quiet"]
     if dry_run:
-        out("would run: git pull --ff-only (store)")
+        out("would run: git %s (store)" % " ".join(how[:-1]))
         return
-    rc, _, stderr = git(store.root, ["pull", "--ff-only", "--quiet"], timeout)
+    rc, _, stderr = git(store.root, how, timeout)
     if rc != 0:
+        if cloud:
+            rc_a, gitdir, _ = git(store.root, ["rev-parse", "--absolute-git-dir"], timeout)
+            if rc_a == 0 and any(
+                os.path.isdir(os.path.join(gitdir.strip(), d)) for d in ("rebase-merge", "rebase-apply")
+            ):
+                git(store.root, ["rebase", "--abort"], timeout)
         warn("store pull failed (%s); using the local copy" % short(stderr or "no output"))
     else:
         out("store: pulled from %s" % up)
