@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "tool": {
+    "repo": "https://github.com/moodykong/code-agent-memory-mirror",
+    "ref": "main"
+  }
+}

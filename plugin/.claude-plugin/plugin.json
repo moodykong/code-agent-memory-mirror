@@ -1,0 +1,19 @@
+{
+  "name": "code-agent-memory-mirror",
+  "version": "0.1.0",
+  "description": "Mirror a git store you own (instructions, skills, agent memory, project settings) into Claude Code and Codex, locally and in cloud sessions.",
+  "author": {
+    "name": "moodykong"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/moodykong/code-agent-memory-mirror",
+  "repository": "https://github.com/moodykong/code-agent-memory-mirror",
+  "keywords": [
+    "memory",
+    "instructions",
+    "skills",
+    "sync",
+    "cloud-sessions",
+    "codex"
+  ]
+}

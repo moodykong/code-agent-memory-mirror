@@ -1,0 +1,28 @@
+{
+  "name": "code-agent-memory-mirror",
+  "version": "0.1.0",
+  "description": "Mirror a git store you own (instructions, skills, agent memory, project settings) into Claude Code and Codex, locally and in cloud sessions.",
+  "author": {
+    "name": "moodykong"
+  },
+  "homepage": "https://github.com/moodykong/code-agent-memory-mirror",
+  "repository": "https://github.com/moodykong/code-agent-memory-mirror",
+  "license": "MIT",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Code Agent Memory Mirror",
+    "shortDescription": "Same instructions, skills and memory in every agent session",
+    "longDescription": "Keep user instructions, personal skills, agent memory and per-project environment settings in a private git store you own, and mirror it into Claude Code and Codex on every machine and in vendor cloud sessions. The agent-mirror program links the store into each agent's home folder, syncs it with git, moves bulk files through a box, and renders cloud environment settings; the skill guides curating the store.",
+    "developerName": "moodykong",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Set up agent-mirror on this machine with my store",
+      "Review and tidy the memory for this project",
+      "Render the cloud environment settings for this project"
+    ]
+  }
+}

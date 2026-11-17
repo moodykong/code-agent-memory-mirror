@@ -1,0 +1,104 @@
+"""doctor: report runtime, config, store state, links, hooks, tools and box settings."""
+
+import os
+import shutil
+
+from agent_mirror import PLUGIN_ROOT, __version__
+from agent_mirror.box import describe_box
+from agent_mirror.config import config_projects
+from agent_mirror.hooks import status_line
+from agent_mirror.install import Installer, link_state, memory_link_path
+from agent_mirror.links import describe
+from agent_mirror.projects import discover_projects
+from agent_mirror.runtime import AGENT_NAMES, detect_runtime
+from agent_mirror.util import git, is_git_toplevel, out, read_text, tilde, upstream
+
+
+def claude_md_state(store):
+    path = store.path("CLAUDE.md")
+    if os.path.islink(path):
+        return "ok (link)" if os.readlink(path) == "AGENTS.md" else "BROKEN (%s)" % describe(path)
+    if os.path.isfile(path):
+        lines = [ln.strip() for ln in read_text(path).splitlines()]
+        return "ok (imports @AGENTS.md)" if "@AGENTS.md" in lines else "OTHER (a separate file, not AGENTS.md)"
+    return "MISSING (optional; init-store writes one)"
+
+
+def cmd_doctor(args, ctx):
+    plat = ctx.plat
+    runtime = detect_runtime()
+    out("agent-mirror %s (plugin %s)" % (__version__, PLUGIN_ROOT))
+    out("runtime: %s" % runtime)
+    cfg_path = plat.config_file()
+    out("config: %s (%s)" % (tilde(cfg_path), "found" if os.path.isfile(cfg_path) else "missing"))
+    store = ctx.store_or_none()
+    if store is None:
+        out("store: none. Run `agent-mirror init-store PATH` (or --adopt an existing store), or pass --store")
+        return 0
+    out("store: %s (from %s)" % (store.root, store.source))
+    meta = store.meta()
+    if meta:
+        out("  store.json: schema %s, tool ref %s" % (meta.get("schema"), store.tool_ref()))
+    else:
+        out("  store.json: MISSING (init-store --adopt writes one)")
+    if is_git_toplevel(store.root, args.timeout):
+        rc_b, branch, _ = git(store.root, ["symbolic-ref", "--short", "-q", "HEAD"], args.timeout)
+        if rc_b != 0:
+            branch = "(detached)"
+        up = upstream(store.root, args.timeout)
+        _, status, _ = git(store.root, ["status", "--porcelain"], args.timeout)
+        n = len([ln for ln in status.splitlines() if ln.strip()])
+        state = "clean" if n == 0 else "%d changed or untracked paths" % n
+        ahead = ""
+        if up:
+            rc, counts, _ = git(store.root, ["rev-list", "--left-right", "--count", "HEAD...@{u}"], args.timeout)
+            if rc == 0 and len(counts.split()) == 2:
+                ahead = ", %s ahead / %s behind (as of the last fetch)" % tuple(counts.split())
+        out("  git: branch %s, upstream %s, %s%s" % (branch.strip() or "?", up or "none", state, ahead))
+    else:
+        out("  git: not a git clone (sync needs one)")
+    out("  CLAUDE.md: %s" % claude_md_state(store))
+    agents = [args.agent] if args.agent else list(AGENT_NAMES)
+    d = discover_projects(ctx, args.project, args.project_path)
+    d.report()
+    out("links for %s:" % ",".join(agents))
+    inst = Installer(ctx, dry_run=True)
+    items = [(link, target) for link, target, _, _ in inst.planned_links(agents)]
+    if "claude" in agents:
+        projects = list(d.matched)
+        parent = d.parent_link()
+        if parent:
+            projects.append(parent)
+        if not args.project:
+            for name, paths in config_projects(ctx.config):
+                for p in paths:
+                    real = os.path.realpath(os.path.expanduser(p))
+                    if os.path.isdir(real) and (name, real) not in projects:
+                        projects.append((name, real))
+        forced = d.matched[0][0] if d.mode == "forced" else None
+        for name, path in projects:
+            link, _ = memory_link_path(ctx, path, args.memory_dir if name == forced else None)
+            items.append((link, store.memory_store(name)))
+    counts = {}
+    for link, target in items:
+        label, note = link_state(inst, link, target)
+        counts[label] = counts.get(label, 0) + 1
+        out("  %-10s %s (%s)" % (label, tilde(link), note))
+    out("  summary: " + ", ".join("%d %s" % (v, k) for k, v in sorted(counts.items())))
+    out("hooks (claude): %s" % status_line(ctx))
+    out("tools:")
+    for tool in ("git", "uv", "az", "rclone"):
+        path = shutil.which(tool)
+        out("  %-7s %s" % ("ok" if path else "MISSING", tool + (" (%s)" % path if path else "")))
+    out("box:")
+    names = store.project_names()
+    if not names:
+        out("  (no projects/<name>/env.json in the store)")
+    for name in names:
+        lines, problems = describe_box(store.load_env(name))
+        out("  %s: %s" % (name, lines[0]))
+        for line in lines[1:]:
+            out("    " + line)
+        for p in problems:
+            out("    PROBLEM  %s" % p)
+    return 0

@@ -1,0 +1,21 @@
+# logs
+*.log
+logs/
+
+# backups made by agent-mirror or by hand
+backups/
+.agent-mirror-backups/
+*.bak
+
+# Python
+__pycache__/
+*.pyc
+
+# machine-local overrides, never shared
+*.local.*
+.env
+*.env
+
+# editor and OS noise
+.DS_Store
+Thumbs.db
