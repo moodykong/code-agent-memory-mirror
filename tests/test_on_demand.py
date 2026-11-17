@@ -397,7 +397,7 @@ class RcloneEnvTest(ToolTest):
         self.assertEqual(os.stat(target).st_mode & 0o777, 0o600)
         lines = dict(line.split("=", 1) for line in read(target).splitlines())
         self.assertEqual(lines["RCLONE_CONFIG_MYDRIVE_DRIVE_ID"], "d1")
-        self.assertEqual(lines["RCLONE_CONFIG_MYDRIVE_TOKEN"], token)
+        self.assertEqual(lines["RCLONE_CONFIG_MYDRIVE_TOKEN"], "'%s'" % token)  # JSON is single-quoted for shells and dotenv readers
         rc, out = self.run_tool("box", "rclone-env", "--remote", "mydrive", "--out", target, env=env)
         self.assertEqual(rc, 2, out)
         rc, out = self.run_tool("box", "rclone-env", "--remote", "mydrive", "--out", self.s("x.env"), env=env)

@@ -201,6 +201,21 @@ def cmd_unmount(args, s, plat):
 
 # rclone-env -------------------------------------------------------------------------------------
 
+_PLAIN_ENV_VALUE = re.compile(r"^[A-Za-z0-9_./:@+,-]*$")
+
+
+def quote_env_value(value):
+    """Quote a value for a NAME=value line so that both a shell (`. file`) and a dotenv
+    parser read it back unchanged. An OAuth token is JSON, full of double quotes; written
+    bare, a shell strips those quotes and the token no longer parses."""
+    value = str(value)
+    if _PLAIN_ENV_VALUE.match(value):
+        return value
+    if "'" not in value and "\n" not in value:
+        return "'%s'" % value
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$").replace("`", "\\`")
+    return '"%s"' % escaped.replace("\n", "\\n")
+
 
 def cmd_rclone_env(args, ctx):
     name = args.remote
@@ -268,7 +283,7 @@ def cmd_rclone_env(args, ctx):
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         for var, value in lines:
-            fh.write("%s=%s\n" % (var, value))
+            fh.write("%s=%s\n" % (var, quote_env_value(value)))
     try:
         os.chmod(path, 0o600)
     except OSError:
