@@ -102,16 +102,65 @@ def build_parser():
     s.add_argument("--commit", action="store_true", help="commit the new skeleton")
     s.set_defaults(func=lazy("storeinit", "cmd_init_store"))
 
-    s = sub.add_parser(
-        "install", parents=[common, timeout, proj, dry], help="link the agents' home folders into the store"
-    )
-    s.add_argument(
+    agents_arg = argparse.ArgumentParser(add_help=False)
+    agents_arg.add_argument(
         "--agents", help="comma list of %s (default: the config's agents, else both)" % ",".join(AGENT_NAMES)
+    )
+    many = argparse.ArgumentParser(add_help=False)
+    many.add_argument(
+        "--project",
+        action="append",
+        metavar="NAME",
+        help="a project to consider, with a --project-path in the same order (repeatable)",
+    )
+    many.add_argument(
+        "--project-path", action="append", metavar="PATH", help="where that project is checked out (repeatable)"
+    )
+
+    s = sub.add_parser(
+        "plan",
+        parents=[common, timeout, agents_arg, many],
+        help="compare this machine with the store, unit by unit (read-only)",
+        description="Compare this machine with the store for every unit (instruction files, skills, each "
+        "project's Claude memory and box) and say what apply would do. Projects: the config's, the ones "
+        "given, and the one found from the current folder. Changes nothing.",
+    )
+    s.add_argument("--json", action="store_true", help="print the plan as JSON")
+    s.set_defaults(func=lazy("plan", "cmd_plan"))
+
+    s = sub.add_parser(
+        "apply",
+        parents=[common, timeout, agents_arg, many, dry],
+        help="apply the plan: one action per unit, from a choices file or the defaults",
+        description="Recompute the plan, then apply one action per unit: from --choices, else a choice "
+        "recorded for this machine, else the default when the case needs no decision. reconcile and "
+        "first-setup units without a choice wait. Everything replaced is backed up; uninstall restores it.",
+    )
+    s.add_argument("--choices", metavar="FILE", help='a JSON file {"unit id": "action", ...}')
+    s.add_argument("--only", nargs="+", metavar="UNIT_ID", help="apply only these units")
+    s.add_argument(
+        "--yes-defaults", action="store_true", help="first-setup units take their default (reconcile units still wait)"
+    )
+    s.set_defaults(func=lazy("apply", "cmd_apply"))
+
+    s = sub.add_parser(
+        "install",
+        parents=[common, timeout, proj, dry, agents_arg],
+        help="fresh machines: link the agents' home folders into the store",
+        description="For a fresh machine. Computes the plan and applies every unit that needs no decision; "
+        "units that need one (first-setup, reconcile) are listed and left alone: run `agent-mirror plan`.",
     )
     s.add_argument(
         "--memory-dir", metavar="PATH", help="Claude's memory folder for --project (default: found or computed)"
     )
+    s.add_argument(
+        "--strict", action="store_true", help="exit with code 4 and change nothing when the machine is not fresh"
+    )
     s.set_defaults(func=lazy("install", "cmd_install"))
+
+    s = sub.add_parser("machine", parents=[common], help="show this machine's id, name and recorded choices")
+    s.add_argument("--name", help="set this machine's name (used for machines/<name>.json in the store)")
+    s.set_defaults(func=lazy("machine", "cmd_machine"))
 
     s = sub.add_parser("uninstall", parents=[common, timeout, dry], help="remove links into the store, restore backups")
     s.set_defaults(func=lazy("install", "cmd_uninstall"))
@@ -166,6 +215,9 @@ def build_parser():
     force.add_argument("--force", action="store_true", help="go ahead even when the disk guard says no")
     b = box.add_parser("push", parents=every, help="upload the include folders and archives (developer machine only)")
     b.add_argument("--delete", action="store_true", help="also delete remote files whose local file is gone")
+    b.add_argument(
+        "--take-over", action="store_true", help="make this machine the box's writer (rewrites <inbound>/_writer.json)"
+    )
     b = box.add_parser(
         "index", parents=every, help="list the inbound side into box_index.jsonl (with archive contents)"
     )
@@ -189,6 +241,18 @@ def build_parser():
     b = box.add_parser("mount", parents=every, help="rclone: mount the inbound side read-only (needs FUSE)")
     b.add_argument("--cache-max-size", default="10G", help="cap for the local file cache (default 10G)")
     b = box.add_parser("unmount", parents=every, help="rclone: unmount what box mount mounted")
+    b = box.add_parser(
+        "candidates",
+        parents=[common, proj],
+        help="list untracked and ignored project entries that could go in the box (read-only)",
+    )
+    b.add_argument("--json", action="store_true", help="print JSON")
+    b.add_argument(
+        "--min-bytes", type=int, default=0, metavar="N", help="leave out entries smaller than N bytes (default 0)"
+    )
+    b.add_argument(
+        "--time-budget", type=float, default=30.0, metavar="SECONDS", help="time for all size walks (default 30)"
+    )
     b = box.add_parser("rclone-env", parents=[common], help="turn a local rclone remote into RCLONE_CONFIG_* variables")
     b.add_argument("--remote", required=True, metavar="NAME", help="the rclone remote name")
     b.add_argument("--out", metavar="FILE", help="write NAME=value lines to FILE (owner-only); otherwise names only")

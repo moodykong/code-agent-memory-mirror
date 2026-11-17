@@ -15,6 +15,7 @@ The same steps are in `runbook.json` (machine-readable) and `agent-mirror cloud 
   (`@@TOOL_REF@@`) to `~/code-agent-memory-mirror`, and links it onto PATH.
 @@PYTHON_LINE@@
 @@SETUP_LINE@@
+@@COMPANIONS_LINE@@
 - Runs `agent-mirror init-store --adopt` (writes the user config), `install --agents claude`
   and `hooks install` (session start, memory write and session end hooks in `~/.claude/settings.json`).
 - Writes timings to `~/agent_setup_probe.txt`, and always exits 0.

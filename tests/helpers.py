@@ -395,10 +395,11 @@ finish(0)
 """
 
 # A stand-in for rclone: logs argv to FAKE_RCLONE_LOG and acts out lsjson,
-# lsjson --stat, copy and copyto against FAKE_RCLONE_FILES (paths under the
-# inbound remote) and a fake remote folder FAKE_RCLONE_ROOT.
+# lsjson --stat, cat, copy and copyto against FAKE_RCLONE_FILES (paths under the
+# inbound remote) and, when set, FAKE_RCLONE_ROOT: a folder standing in for every
+# remote ("name:path" is <root>/name/path), where uploads land and downloads come from.
 FAKE_RCLONE = r"""
-import json, os, sys
+import json, os, re, shutil, sys
 
 argv = sys.argv[1:]
 entry = {"argv": argv}
@@ -419,37 +420,77 @@ if os.environ.get("FAKE_RCLONE_FILES"):
     with open(os.environ["FAKE_RCLONE_FILES"]) as fh:
         files = json.load(fh)
 inbound = os.environ.get("FAKE_RCLONE_INBOUND", "")
+root = os.environ.get("FAKE_RCLONE_ROOT")
+
+
+def is_remote(text):
+    return bool(re.match(r"^[A-Za-z0-9_-]{2,}:", text or ""))
+
+
+def stored(remote):
+    if not root or not is_remote(remote):
+        return None
+    name, _, path = remote.partition(":")
+    return os.path.join(root, name, *[p for p in path.split("/") if p])
 
 
 def rel_of(remote):
     return remote[len(inbound):].lstrip("/") if remote.startswith(inbound) else None
 
 
+def stored_files():
+    base = stored(inbound) if inbound else None
+    found = []
+    if base and os.path.isdir(base):
+        for r, _, fs in os.walk(base):
+            for f in fs:
+                found.append(os.path.relpath(os.path.join(r, f), base).replace(os.sep, "/"))
+    return found
+
+
+all_files = sorted(set(files) | set(stored_files()))
+
 if argv[:1] == ["lsjson"] and "--stat" in argv:
     rel = rel_of(argv[-1])
-    if rel in files:
+    if rel in all_files:
         finish(0, json.dumps({"Path": rel, "IsDir": False, "Size": 3}))
-    if any(f.startswith(rel + "/") for f in files):
+    if any(f.startswith(rel + "/") for f in all_files):
         finish(0, json.dumps({"Path": rel, "IsDir": True, "Size": -1}))
     finish(3, stderr="error: object not found")
 if argv[:1] == ["lsjson"]:
     rel = rel_of(argv[-1]) or ""
-    under = [f[len(rel) + 1:] if rel else f for f in files if not rel or f.startswith(rel + "/")]
+    under = [f[len(rel) + 1:] if rel else f for f in all_files if not rel or f.startswith(rel + "/")]
     finish(0, json.dumps([{"Path": f, "Name": f.rsplit("/", 1)[-1], "Size": 1, "ModTime": "2026-01-01T00:00:00Z", "IsDir": False} for f in under]))
 if argv[:2] == ["config", "dump"]:
     finish(0, os.environ.get("FAKE_RCLONE_CONFIG", "{}"))
 if argv[:1] == ["cat"]:
+    src = stored(argv[1])
+    if src and os.path.isfile(src):
+        with open(src) as fh:
+            finish(0, fh.read())
     finish(3, stderr="error: directory not found")
 if argv[:1] in (["copy"], ["copyto"]) and "--files-from" in argv:
     with open(argv[argv.index("--files-from") + 1]) as fh:
         entry["files_from"] = fh.read().split()
-if argv[:1] in (["copyto"],) and argv[1].startswith(inbound):
-    dest = argv[2]
+if argv[:1] == ["copyto"] and not is_remote(argv[1]) and stored(argv[2]):
+    dest = stored(argv[2])
     if not ("--ignore-existing" in argv and os.path.exists(dest)):
         os.makedirs(os.path.dirname(dest), exist_ok=True)
-        with open(dest, "w") as fh:
-            fh.write("remote " + rel_of(argv[1]))
-if argv[:1] == ["copy"] and argv[1].startswith(inbound):
+        shutil.copyfile(argv[1], dest)
+if argv[:1] == ["copyto"] and inbound and argv[1].startswith(inbound):
+    dest = argv[2]
+    src = stored(argv[1])
+    rel = rel_of(argv[1])
+    if not (src and os.path.isfile(src)) and rel not in files:
+        finish(3, stderr="error: object not found")
+    if not ("--ignore-existing" in argv and os.path.exists(dest)):
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        if src and os.path.isfile(src):
+            shutil.copyfile(src, dest)
+        else:
+            with open(dest, "w") as fh:
+                fh.write("remote " + rel)
+if argv[:1] == ["copy"] and inbound and argv[1].startswith(inbound):
     rel = rel_of(argv[1])
     for f in files:
         if f.startswith(rel + "/"):

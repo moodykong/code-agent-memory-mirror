@@ -1,8 +1,11 @@
 """session-start: run at the start of every agent session.
 
-Every runtime: pull the store. On a cloud runtime also: dependency sync in the
-project folder, the project's session_start_commands, and install for the
-runtime's agent (including the memory link). Always prints the memory index path.
+Every runtime: pull the store. On a cloud runtime also: bring agent-mirror's own
+clone to the ref pinned in store.json (then run again once with the new code),
+dependency sync in the project folder, the project's session_start_commands,
+install for the runtime's agent (every unit that needs no decision, including the
+memory link), and links to the project's companion repos. Always prints the
+memory index path.
 """
 
 import os
@@ -10,10 +13,14 @@ import shlex
 import shutil
 import time
 
+from agent_mirror import __version__
+from agent_mirror.apply import apply_plan
+from agent_mirror.companions import link_companions
+from agent_mirror.plan import Plan
 from agent_mirror.platforms import current
 from agent_mirror.projects import discover_projects
-from agent_mirror.install import Installer
 from agent_mirror.runtime import CLOUD_RUNTIMES, agent_for_runtime, detect_runtime
+from agent_mirror.selfupdate import self_update
 from agent_mirror.util import git, is_git_toplevel, out, run, short, upstream, warn
 
 
@@ -105,10 +112,14 @@ def print_memory_index(store, project):
 def cmd_session_start(args, ctx):
     store = ctx.require_store()
     runtime = detect_runtime()
-    out("agent-mirror session-start: runtime %s, store %s" % (runtime, store.root))
+    out("agent-mirror %s session-start: runtime %s, store %s" % (__version__, runtime, store.root))
     if args.dry_run:
         out("dry run: nothing will change")
     pull_store(store, args.timeout, args.dry_run)
+    if runtime in CLOUD_RUNTIMES:
+        rc = self_update(store, args.timeout, args.dry_run)
+        if rc is not None:
+            return rc
     d = discover_projects(ctx, args.project, args.project_path)
     d.report()
     rc = 0
@@ -129,8 +140,10 @@ def cmd_session_start(args, ctx):
                 "(Claude keys memory to the folder the session runs in)" % parent
             )
             projects.append(parent)
-        inst = Installer(ctx, args.dry_run)
-        rc = inst.install([agent], projects)
+        plan = Plan(ctx, [agent], projects)
+        rc, _ = apply_plan(ctx, plan, args.dry_run, "install")
+        for project, path in d.matched:
+            link_companions(ctx.plat, project, path, store.load_env(project), args.dry_run)
     else:
         out("local runtime: only the store pull runs")
     names = d.names()

@@ -6,6 +6,9 @@
 # Codex checks the store out with its own access, so this script needs no token.
 # If the search below does not find the store checkout, set AGENT_MIRROR_STORE on the
 # settings page to its folder. Every step is allowed to fail; the script always exits 0.
+# Setup runs before the vendor sets its own session markers, so tell agent-mirror where it is:
+# a cloud machine never adopts local content and never publishes a machine profile.
+export AGENT_RUNTIME=codex-cloud
 @@PRELUDE@@
 
 # find the store checkout (UNVERIFIED: where Codex checks out a second repo)
@@ -16,6 +19,8 @@ fi
 note "store checkout: ${STORE:-NOT FOUND}"
 
 @@TOOL_STEP@@
+
+@@COMPANIONS_STEP@@
 
 @@PYTHON_STEP@@
 

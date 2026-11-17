@@ -1,7 +1,12 @@
 """sync: adopt stray memory files, secret scan, commit, pull --rebase, push. Never force.
 
-Only memory/, skills/, AGENTS.md and CLAUDE.md are committed. A lock file in
-the store's git folder stops two runs at once (a hook and a timer, say).
+Only memory/, skills/, machines/, AGENTS.md and CLAUDE.md are committed. A lock
+file in the store's git folder stops two runs at once (a hook and a timer, say).
+
+Stray memory: a real (unlinked) Claude memory folder is copied into the store
+only when this machine recorded that the project's memory belongs in the store
+(apply or install linked it: link, adopt or merge). Memory a machine never
+decided about stays where it is; `agent-mirror plan` shows it.
 """
 
 import contextlib
@@ -15,11 +20,11 @@ import time
 from agent_mirror.inbox import delete_branch, process_inbox, push_to_inbox, upstream_parts
 from agent_mirror.install import merge_tree
 from agent_mirror.links import is_linklike
-from agent_mirror.platforms import claude_slug, pid_alive
+from agent_mirror.platforms import pid_alive
 from agent_mirror.runtime import CLOUD_RUNTIMES, detect_runtime
 from agent_mirror.util import err, git, is_git_toplevel, out, short, tilde, upstream, warn
 
-SYNC_PATHS = ("memory", "AGENTS.md", "CLAUDE.md", "skills")
+SYNC_PATHS = ("memory", "AGENTS.md", "CLAUDE.md", "skills", "machines")
 LOCK_NAME = "agent-mirror-sync.lock"
 LOCK_STALE_SECONDS = 900
 
@@ -81,21 +86,38 @@ class Lock:
             self.held = False
 
 
+ADOPTED = ("link", "adopt", "merge")
+
+
 def adopt_strays(ctx, store, dry_run):
-    """Copy files from real (unlinked) Claude memory folders into matching stores."""
+    """Copy files from real (unlinked) Claude memory folders into the store, for projects whose memory
+    this machine decided to keep in the store (recorded link, adopt or merge)."""
+    from agent_mirror.config import config_projects, load_user_config
+    from agent_mirror.install import memory_link_path
+    from agent_mirror.machine import choices
+    from agent_mirror.util import expand, norm
+
     store_root = store.path("memory")
     if not os.path.isdir(store_root):
         return
-    projects = [n for n in os.listdir(store_root) if os.path.isdir(os.path.join(store_root, n))]
+    cfg = load_user_config(ctx.plat)
+    decided = choices(cfg)
+    wanted = {}
+    for name, paths in config_projects(cfg):
+        if decided.get("memory:%s" % name) not in ADOPTED:
+            continue
+        for p in paths:
+            real = os.path.realpath(expand(p))
+            link, _ = memory_link_path(ctx, real)
+            wanted[norm(link)] = name
     pattern = os.path.join(ctx.plat.claude_home(), "projects", "*", "memory")
     for mem in sorted(glob.glob(pattern)):
         if is_linklike(mem) or not os.path.isdir(mem):
             continue
-        slug = os.path.basename(os.path.dirname(mem))
-        matches = [p for p in projects if slug == claude_slug(p) or slug.endswith("-" + claude_slug(p))]
-        if not matches:
+        name = wanted.get(norm(mem))
+        if not name:
             continue
-        project = max(matches, key=len)
+        project = os.path.basename(store.memory_store(name))
         copied, conflicts, _ = merge_tree(mem, os.path.join(store_root, project), dry_run)
         if copied or conflicts:
             out(
@@ -186,7 +208,10 @@ def _sync(args, ctx, store, timeout, gitdir):
     if dry:
         out("dry run: nothing will change")
     adopt_strays(ctx, store, dry)
-    paths = [p for p in SYNC_PATHS if os.path.lexists(os.path.join(root, p))]
+    runtime = detect_runtime()
+    # A cloud machine is throwaway: it never publishes a machine profile, even if one was written by mistake.
+    wanted = [p for p in SYNC_PATHS if not (p == "machines" and runtime in CLOUD_RUNTIMES)]
+    paths = [p for p in wanted if os.path.lexists(os.path.join(root, p))]
     files = changed_files(root, paths, timeout)
     found = scan_files(root, files)
     if found:
@@ -195,7 +220,6 @@ def _sync(args, ctx, store, timeout, gitdir):
             print("  %s: %s" % (rel, ", ".join(hits)), file=sys.stderr, flush=True)
         return 3
     out("secret scan: %d changed files clean" % len(files))
-    runtime = detect_runtime()
     to_inbox = runtime in CLOUD_RUNTIMES and store.cloud_push() == "inbox"
     message = args.message or "memory: sync from %s %s" % (runtime, socket.gethostname())
     if dry:

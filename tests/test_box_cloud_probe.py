@@ -65,6 +65,10 @@ class RcloneBoxTest(ToolTest):
         )
         rc, out = self.box_run("box", "push", "--dry-run", "--delete", env=self.rclone_env(CLAUDECODE="1"), az={})
         self.assertIn("would run: rclone sync ", out)
+        self.assertIn("would write the writer marker fakeremote:box/in/_writer.json", out)
+        reads = [c for c in self.calls() if c[:2] == ["copyto", "fakeremote:box/in/_writer.json"]]
+        self.assertEqual(self.calls(), reads)  # a dry run only reads the writer marker
+        os.remove(self.rclone_log)
         rc, out = self.box_run("box", "push", env=self.rclone_env(AGENT_RUNTIME="codex-cloud"), az={})
         self.assertEqual(rc, 2, out)
         self.assertIn("refusing box push on codex-cloud", out)
@@ -73,7 +77,8 @@ class RcloneBoxTest(ToolTest):
     def test_push_runs_copy_never_sync(self):
         rc, out = self.box_run("box", "push", env=self.rclone_env(CLAUDECODE="1"), az={})
         self.assertEqual(rc, 0, out)
-        self.assertEqual([c[0] for c in self.calls()], ["copy"])
+        transfers = [c[0] for c in self.calls() if not any(a.endswith("_writer.json") for a in c)]
+        self.assertEqual(transfers, ["copy"])
 
     def test_index_filters_and_writes_jsonl(self):
         files = ["temporary/a.txt", "temporary/scratch/b.txt", "figures/f.png", "other/x.txt"]

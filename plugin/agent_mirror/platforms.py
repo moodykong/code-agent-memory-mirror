@@ -116,6 +116,22 @@ class Platform:
     def agents_skills(self):
         return self.join(self.agents_dir(), "skills")
 
+    def claude_skills(self):
+        return self.join(self.claude_home(), "skills")
+
+    def skill_folders(self, agents):
+        """[(label, folder)]: the shared skills folder, then each selected agent's own skills folder.
+
+        Codex reads the shared folder (it has no folder of its own in this model)."""
+        found = [("shared", self.agents_skills())]
+        if "claude" in agents:
+            found.append(("claude", self.claude_skills()))
+        return found
+
+    def companions_dir(self):
+        """Where cloud setup scripts clone public companion repos (see companion_repos)."""
+        return self.join(self.home(), "companions")
+
     def claude_settings(self):
         return self.join(self.claude_home(), "settings.json")
 
@@ -172,6 +188,7 @@ class Platform:
             "claude_settings": self.claude_settings(),
             "codex_home": self.codex_home(),
             "agents_skills": self.agents_skills(),
+            "companions_dir": self.companions_dir(),
             "config_dir": self.config_dir(),
             "config_file": self.config_file(),
             "cache_dir": self.cache_dir(),

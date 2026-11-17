@@ -374,12 +374,24 @@ def full_probe(args, ctx):
         box_args = ["--project", name, "--project-path", path]
         tail_run(self_argv(ctx, "box", "index", *box_args), 300, tail=4)
         tail_run(self_argv(ctx, "box", "status", *box_args), 60, tail=6)
-        small = small_indexed_file(store.path("projects", name, "box_index.jsonl"))
+        index_path = store.path("projects", name, "box_index.jsonl")
+        small = small_indexed_file(index_path)
         if small:
             out("fetch %s" % small)
             tail_run(self_argv(ctx, "box", "fetch", small, *box_args), 180, tail=3)
         else:
-            out("no small file found in the index to fetch")
+            member = smallest_archived_file(index_path)
+            if member:
+                local = os.path.join(path, *member.split("/"))
+                existed = os.path.lexists(local)
+                out("fetch %s (the smallest file of an archived folder: a sub-path fetch)" % member)
+                tail_run(self_argv(ctx, "box", "fetch", member, *box_args), 300, tail=3)
+                if existed:
+                    out("not evicted: %s was here before the fetch" % member)
+                else:
+                    tail_run(self_argv(ctx, "box", "evict", member, "--force", *box_args), 60, tail=2)
+            else:
+                out("no small file found in the index to fetch")
         note = ".agent_probe_note.txt"
         note_path = os.path.join(path, note)
         try:
@@ -429,6 +441,30 @@ def full_probe(args, ctx):
     return 0
 
 
+def smallest_archived_file(index_path):
+    """'<archive>/<path>' of the smallest bundled file in an archived folder's table of contents, or None."""
+    from agent_mirror.box.archive import read_local_toc
+    from agent_mirror.box.browse import load_index
+
+    try:
+        _, archives = load_index(index_path)
+    except (OSError, ValueError):
+        return None
+    best = None
+    for a in sorted(archives, key=lambda x: x.get("archive_bytes") or 0):
+        toc = read_local_toc(os.path.dirname(index_path), a) or []
+        for e in toc:
+            if not isinstance(e, dict) or not e.get("path"):
+                continue
+            size = e.get("size") or 0
+            rank = (0 if e.get("in") == "bundle" else 1, size)
+            if best is None or rank < best[0]:
+                best = (rank, "%s/%s" % (a["path"], e["path"]))
+        if best:
+            break
+    return best[1] if best else None
+
+
 def small_indexed_file(index_path):
     try:
         with open(index_path, encoding="utf-8") as fh:
@@ -436,6 +472,8 @@ def small_indexed_file(index_path):
                 if i > 20000:
                     break
                 r = json.loads(line)
+                if not isinstance(r, dict) or r.get("archive") or "writer" in r:
+                    continue
                 size = r.get("size") or 0
                 if 0 < size < 20000 and str(r.get("path", "")).endswith((".md", ".txt", ".json")):
                     return r["path"]

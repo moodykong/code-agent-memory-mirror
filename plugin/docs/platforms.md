@@ -15,7 +15,7 @@ Both can be unit-tested on any OS by passing a platform name and an environment 
 
 | | Linux (including WSL 2) | macOS | Windows (native) |
 | --- | --- | --- | --- |
-| Test suite | runs and passes (Python 3.9 and 3.10) | UNVERIFIED | runs and passes natively (Python 3.11, Windows 11), under the sandbox guard; one POSIX-shell test skipped |
+| Test suite | runs and passes (Python 3.9 and 3.10) | UNVERIFIED | runs and passes natively (Python 3.11, Windows 11), under the sandbox guard, from a copy in the temp folder; one POSIX-shell test skipped; the real profile's before and after fingerprints were identical (0.3.0) |
 | Folder mapping (homes, config, cache) | verified | unit-tested only | verified under `AGENT_MIRROR_HOME`; the real-profile mapping (USERPROFILE, APPDATA) unit-tested only; Claude home verified |
 | Claude memory folder name (slug) | verified | UNVERIFIED | verified (see below) |
 | Links | symlinks, verified | symlinks, UNVERIFIED | symlinks verified (Developer Mode on); real junctions verified by test; managed copies verified with a simulated symlink failure only |
@@ -32,8 +32,9 @@ marked UNVERIFIED should be checked before anyone relies on it.
 ## AGENT_MIRROR_HOME and the test sandbox
 
 One module, `plugin/agent_mirror/platforms.py`, turns the environment into every home-like location: the
-user home, the Claude and Codex homes, the shared skills folder, the user config folder, the cache, the
-backups folder, the systemd user folder, the LaunchAgents folder and the temp folder used for staging.
+user home, the Claude and Codex homes, the shared skills folder, the companion repos folder, the user
+config folder, the cache, the backups folder, the systemd user folder, the LaunchAgents folder and the
+temp folder used for staging.
 Nothing else in the program reads HOME, USERPROFILE, APPDATA, LOCALAPPDATA or XDG_* or calls
 `os.path.expanduser`. `agent-mirror debug paths` prints every resolved location as JSON.
 
@@ -93,6 +94,8 @@ commands, enabling a scheduled task, and the real clipboard tools.
 | Claude Code home | `~/.claude`, or `$CLAUDE_CONFIG_DIR` | `%USERPROFILE%\.claude`, or `%CLAUDE_CONFIG_DIR%` |
 | Codex home | `~/.codex`, or `$CODEX_HOME` | `%USERPROFILE%\.codex`, or `%CODEX_HOME%` |
 | shared skills | `~/.agents/skills` | `%USERPROFILE%\.agents\skills` |
+| Claude skills | `<claude home>/skills` | `<claude home>\skills` |
+| companion repos (cloud) | `~/companions` | `%USERPROFILE%\companions` |
 | agent-mirror config | `${XDG_CONFIG_HOME:-~/.config}/agent-mirror/config.json` | `%APPDATA%\agent-mirror\config.json` |
 | hook log | Linux `${XDG_CACHE_HOME:-~/.cache}/agent-mirror/sync.log`, macOS `~/Library/Caches/agent-mirror/sync.log` | `%LOCALAPPDATA%\agent-mirror\sync.log` |
 | backups | `~/.agent-mirror-backups/<timestamp>/` | `%USERPROFILE%\.agent-mirror-backups\<timestamp>\` |
@@ -102,18 +105,25 @@ UNVERIFIED (macOS): Claude Code and Codex use `~/.claude` and `~/.codex` there t
 UNVERIFIED (Windows): Codex uses `%USERPROFILE%\.codex` and reads `AGENTS.md` and `~/.agents/skills`
 from the same places as on Linux. (Claude's `%USERPROFILE%\.claude` is verified, see above.)
 
+Skills folders: agent-mirror links store skills one by one into the shared folder (`~/.agents/skills`)
+and into each selected agent's own folder. Only Claude has its own folder in this model; Codex reads the
+shared one. UNVERIFIED: older Codex versions that read `~/.codex/skills` instead; agent-mirror neither
+reads nor writes that folder.
+
 ## Links
 
-`install` always tries a symlink first.
+`install` and `apply` always try a symlink first.
 
 - Linux and macOS: symlinks always work for a normal user.
 - Windows: a symlink needs Developer Mode or admin rights. When the symlink fails, agent-mirror uses:
-  - a directory junction (`cmd /c mklink /J`) for folders (skills, the memory folder). Junctions need
-    no special rights, but only work within local NTFS drives.
+  - a directory junction (`cmd /c mklink /J`) for folders (each skill, the memory folder). Junctions
+    need no special rights, but only work within local NTFS drives.
   - a managed copy for single files (`CLAUDE.md`, `AGENTS.md`). The copy is recorded in the backup
     manifest. `doctor` shows it as `COPY (copy, re-run install after editing)`. Edit the store copy,
     then run `install` again: it refreshes the copy and keeps the old one in the backup folder.
-    `uninstall` removes a managed copy only when it still matches the store copy.
+    `uninstall` removes a managed copy only when it still matches the store copy. `plan` shows a managed
+    copy as `linked`, and as out of date once the store's file changed; `install` and `apply` then
+    refresh it.
 - `install` prints which method it used for each link, and the manifest records it.
 
 Verified by test on Windows 11 (Python 3.11): junction creation through `cmd /c mklink /J`, junction
@@ -227,6 +237,17 @@ The Claude memory folder slug also differs between the two homes, because the pr
 (`C:\Users\<you>\code\app` becomes `C--Users-<you>-code-app`, while `/home/<you>/code/app` becomes
 `-home-<you>-code-app` and `/mnt/c/Users/<you>/code/app` becomes `-mnt-c-Users-<you>-code-app`).
 Each home's install links its own slug folder to the same `memory/<project>/` in its own store clone.
+
+## Cloud self-update and companion repos
+
+On a cloud runtime `session-start` brings agent-mirror's own clone to the ref pinned in the store's
+`store.json` (only when the clone's origin is `tool.repo`), with `git fetch --depth 1` for the shallow
+clone the setup scripts make (a full clone is fetched without `--depth`, so it stays full), and runs the
+new code once (the `AGENT_MIRROR_SELF_UPDATED` variable stops a loop). With `AGENT_MIRROR_TEST_SANDBOX`
+set it never fetches into or checks out a clone outside the sandbox. It also links each project's
+companion repos from `~/companions/<dir>` to `../<dir>` beside the clone, in Python. Both are exercised by
+the test suite on Linux and natively on Windows (a local bare repo as the tool's origin); on a real cloud
+machine they are UNVERIFIED.
 
 ## Claude Code on the web: what a real session showed
 

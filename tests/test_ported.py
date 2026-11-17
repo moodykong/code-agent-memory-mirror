@@ -6,6 +6,7 @@ Run from the repo root:  python3 -m unittest discover -s tests -v
 import glob
 import json
 import os
+import re
 import shlex
 import shutil
 import unittest
@@ -50,19 +51,31 @@ class PortedTest(ToolTest):
 
     # install -----------------------------------------------------------------
 
-    def test_install_creates_links_and_backups(self):
+    def make_fresh(self):
+        """A fresh machine: no instructions, skills or memory of its own (an empty Codex file is fine)."""
+        os.remove(self.h(".claude", "CLAUDE.md"))
+        shutil.rmtree(self.h(".claude", "skills", "alpha"))
+        shutil.rmtree(self.h(".agents"))
+        shutil.rmtree(memory_dir(self.home, self.project))
+
+    def test_install_on_a_fresh_machine_links_everything(self):
+        self.make_fresh()
         rc, out = self.install()
         self.assertEqual(rc, 0, out)
+        self.assertNotIn("wait for a choice", out)
         expected = {
             self.h(".claude", "CLAUDE.md"): self.s("AGENTS.md"),
             self.h(".codex", "AGENTS.md"): self.s("AGENTS.md"),
-            self.h(".agents", "skills"): self.s("skills"),
+            self.h(".agents", "skills", "alpha"): self.s("skills", "alpha"),
+            self.h(".agents", "skills", "beta"): self.s("skills", "beta"),
             self.h(".claude", "skills", "alpha"): self.s("skills", "alpha"),
             self.h(".claude", "skills", "beta"): self.s("skills", "beta"),
             memory_dir(self.home, self.project): self.s("memory", "demo"),
         }
         for link, target in expected.items():
             self.assertLinked(link, target)
+        # the shared skills folder is a real folder with one link per skill, never one whole-folder link
+        self.assertFalse(is_link(self.h(".agents", "skills")))
         # entries that are not store skills are never touched
         self.assertTrue(os.path.isdir(self.h(".claude", "skills", "synced")))
         self.assertFalse(is_link(self.h(".claude", "skills", "synced")))
@@ -73,19 +86,61 @@ class PortedTest(ToolTest):
         data = json.loads(read(manifests[0]))
         self.assertEqual(data["store"], self.store)
         by_path = {e["path"]: e for e in data["entries"]}
-        claude_md = by_path[self.h(".claude", "CLAUDE.md")]
-        self.assertEqual(claude_md["method"], "symlink")
-        self.assertEqual(read(claude_md["backup"]), "old claude user file\n")
-        agents_skills = by_path[self.h(".agents", "skills")]
-        self.assertEqual(read(os.path.join(agents_skills["backup"], "alpha", "SKILL.md")), "old agents alpha\n")
+        codex_md = by_path[self.h(".codex", "AGENTS.md")]
+        self.assertEqual(codex_md["method"], "symlink")
+        self.assertEqual(read(codex_md["backup"]), "")
+        self.assertTrue(by_path[self.h(".agents", "skills")]["created_dir"])
         self.assertEqual(by_path[self.h(".claude", "skills", "beta")]["before"], "absent")
         backup_root = os.path.dirname(manifests[0])
-        self.assertTrue(claude_md["backup"].startswith(backup_root + os.sep + ".claude" + os.sep))
-        # the project is remembered in the user config
+        self.assertTrue(codex_md["backup"].startswith(backup_root + os.sep + ".codex" + os.sep))
+        # the project, the machine and the applied choices are remembered in the user config
         cfg = json.loads(read(self.h(".config", "agent-mirror", "config.json")))
         self.assertEqual(cfg["projects"]["demo"], self.project)
+        self.assertEqual(len(cfg["machine"]["id"]), 32)
+        self.assertEqual(cfg["choices"]["memory:demo"], "link")
+        # and uninstall puts the fresh machine back as it was
+        rc, out = self.run_tool("uninstall")
+        self.assertEqual(rc, 0, out)
+        self.assertFalse(os.path.lexists(self.h(".agents", "skills")))
+        self.assertFalse(os.path.lexists(self.h(".claude", "CLAUDE.md")))
+        self.assertEqual(read(self.h(".codex", "AGENTS.md")), "")
+
+    def test_install_on_a_lived_in_machine_applies_only_safe_units(self):
+        rc, out = self.install()
+        self.assertEqual(rc, 0, out)
+        self.assertIn("not fresh", out)
+        self.assertIn("agent-mirror plan", out)
+        for uid in ("instructions:claude", "skill:alpha", "memory:demo"):
+            self.assertRegex(out, r"(first-setup|reconcile) +%s" % re.escape(uid))
+        # safe units: the empty Codex file and the skill only the store has
+        self.assertLinked(self.h(".codex", "AGENTS.md"), self.s("AGENTS.md"))
+        self.assertLinked(self.h(".claude", "skills", "beta"), self.s("skills", "beta"))
+        self.assertLinked(self.h(".agents", "skills", "beta"), self.s("skills", "beta"))
+        # units that need a decision are left exactly as they were
+        self.assertEqual(read(self.h(".claude", "CLAUDE.md")), "old claude user file\n")
+        self.assertEqual(read(self.h(".claude", "skills", "alpha", "SKILL.md")), "old claude alpha\n")
+        self.assertEqual(read(self.h(".agents", "skills", "alpha", "SKILL.md")), "old agents alpha\n")
+        mem = memory_dir(self.home, self.project)
+        self.assertFalse(is_link(mem))
+        self.assertEqual(read(os.path.join(mem, "MEMORY.md")), LOCAL_INDEX)
+        self.assertFalse(os.path.exists(self.s("memory", "demo", "local_only.md")))
+        self.assertNotEqual(read(self.s("AGENTS.md")), "old claude user file\n")
+
+    def test_install_strict_refuses_a_lived_in_machine(self):
+        rc, out = self.install("--strict")
+        self.assertEqual(rc, 4, out)
+        self.assertIn("not fresh", out)
+        self.assertIn("instructions:claude", out)
+        self.assertFalse(is_link(self.h(".codex", "AGENTS.md")))
+        self.assertFalse(os.path.exists(self.h(".agent-mirror-backups")))
+        self.assertFalse(os.path.exists(self.h(".config", "agent-mirror", "config.json")))
+        self.make_fresh()
+        rc, out = self.install("--strict")
+        self.assertEqual(rc, 0, out)
+        self.assertLinked(self.h(".claude", "CLAUDE.md"), self.s("AGENTS.md"))
 
     def test_install_is_idempotent(self):
+        self.make_fresh()
         rc, out = self.install()
         self.assertEqual(rc, 0, out)
         links_before = {p: readlink(p) for p in glob.glob(self.h(".claude", "skills", "*")) if is_link(p)}
@@ -105,27 +160,44 @@ class PortedTest(ToolTest):
         self.assertEqual(rc, 0, out)
         self.assertIn("would link", out)
         self.assertFalse(is_link(self.h(".claude", "CLAUDE.md")))
+        self.assertFalse(is_link(self.h(".codex", "AGENTS.md")))
         self.assertFalse(os.path.exists(self.h(".agent-mirror-backups")))
         self.assertFalse(os.path.exists(self.s("memory", "demo", "local_only.md")))
         self.assertTrue(os.path.isdir(memory_dir(self.home, self.project)))
         self.assertFalse(os.path.exists(self.h(".config", "agent-mirror", "config.json")))
+        self.assertFalse(os.path.exists(self.s("machines")))
 
     def test_memory_merge_never_overwrites(self):
-        rc, out = self.install()
+        choices = os.path.join(self.base, "choices.json")
+        write(choices, json.dumps({"memory:demo": "merge"}))
+        rc, out = self.run_tool("apply", "--choices", choices, "--project", "demo", "--project-path", self.project)
         self.assertEqual(rc, 0, out)
         store = self.s("memory", "demo")
         self.assertEqual(read(os.path.join(store, "local_only.md")), "local only memory\n")
-        self.assertEqual(read(os.path.join(store, "MEMORY.md")), STORE_INDEX)
         self.assertEqual(read(os.path.join(store, "shared.md")), SHARED_BODY)
-        self.assertIn("conflict", out)
-        self.assertIn("MEMORY.md", out)
+        index = read(os.path.join(store, "MEMORY.md"))
+        self.assertTrue(index.startswith(STORE_INDEX), index)  # union merge: the store's lines first
+        self.assertIn("[Local](local_only.md)", index)
+        self.assertLinked(memory_dir(self.home, self.project), store)
         data = json.loads(read(self.manifests()[0]))
         mem_entry = [e for e in data["entries"] if e["path"] == memory_dir(self.home, self.project)][0]
         self.assertEqual(read(os.path.join(mem_entry["backup"], "MEMORY.md")), LOCAL_INDEX)
 
     def test_uninstall_restores(self):
-        rc, out = self.install()
+        choices = os.path.join(self.base, "choices.json")
+        write(
+            choices,
+            json.dumps({"instructions:claude": "adopt", "skill:alpha": "take-store", "memory:demo": "link"}),
+        )
+        rc, out = self.run_tool("apply", "--choices", choices, "--project", "demo", "--project-path", self.project)
         self.assertEqual(rc, 0, out)
+        self.assertEqual(read(self.s("AGENTS.md")), "old claude user file\n")  # adopted into the store
+        for link in (
+            self.h(".claude", "CLAUDE.md"),
+            self.h(".agents", "skills", "alpha"),
+            self.h(".claude", "skills", "alpha"),
+        ):
+            self.assertTrue(is_link(link) or not SYMLINKS, link)
         rc, out = self.run_tool("uninstall")
         self.assertEqual(rc, 0, out)
         claude_md = self.h(".claude", "CLAUDE.md")
@@ -134,6 +206,7 @@ class PortedTest(ToolTest):
         self.assertFalse(is_link(self.h(".codex", "AGENTS.md")))
         self.assertEqual(read(self.h(".codex", "AGENTS.md")), "")
         self.assertFalse(is_link(self.h(".agents", "skills")))
+        self.assertEqual(sorted(os.listdir(self.h(".agents", "skills"))), ["alpha"])
         self.assertEqual(read(self.h(".agents", "skills", "alpha", "SKILL.md")), "old agents alpha\n")
         self.assertEqual(read(self.h(".claude", "skills", "alpha", "SKILL.md")), "old claude alpha\n")
         self.assertFalse(os.path.lexists(self.h(".claude", "skills", "beta")))
@@ -160,17 +233,32 @@ class PortedTest(ToolTest):
         self.assertIn("link loop", out)
         self.assertFalse(os.path.lexists(self.h(".claude", "skills", "evil")))
         self.assertFalse(os.path.lexists(self.h(".claude", "skills", "loopy")))
-        self.assertLinked(self.h(".claude", "skills", "alpha"), self.s("skills", "alpha"))
+        self.assertLinked(self.h(".claude", "skills", "beta"), self.s("skills", "beta"))
 
-    def test_refuses_link_location_inside_store(self):
+    def test_claude_skills_folder_link_into_store_is_converted(self):
         shutil.rmtree(self.h(".claude", "skills"))
         dir_link(self.s("skills"), self.h(".claude", "skills"))
+        rc, out = self.run_tool("plan", "--agents", "claude", "--json")
+        self.assertEqual(rc, 0, out)
+        unit = [u for u in json.loads(out)["units"] if u["id"] == "skills-folder:claude"][0]
+        self.assertEqual((unit["case"], unit["default_action"]), ("legacy-folder-link", "convert"))
         rc, out = self.run_tool("install", "--agents", "claude")
-        self.assertNotEqual(rc, 0, out)
-        self.assertIn("inside the store", out)
-        alpha = self.s("skills", "alpha")
+        self.assertEqual(rc, 0, out)
+        self.assertFalse(is_link(self.h(".claude", "skills")))
+        self.assertLinked(self.h(".claude", "skills", "alpha"), self.s("skills", "alpha"))
+        self.assertLinked(self.h(".claude", "skills", "beta"), self.s("skills", "beta"))
+        alpha = self.s("skills", "alpha")  # the store itself is never moved
         self.assertTrue(os.path.isdir(alpha) and not is_link(alpha))
         self.assertTrue(os.path.isfile(os.path.join(alpha, "SKILL.md")))
+
+    def test_refuses_link_location_inside_store(self):
+        os.makedirs(self.s("codexhome"))
+        shutil.rmtree(self.h(".codex"))
+        dir_link(self.s("codexhome"), self.h(".codex"))
+        rc, out = self.run_tool("install", "--agents", "codex")
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("inside the store", out)
+        self.assertFalse(os.path.lexists(self.s("codexhome", "AGENTS.md")))
 
     # sync --------------------------------------------------------------------
 
@@ -189,6 +277,11 @@ class PortedTest(ToolTest):
 
     def test_sync_commits_adopts_and_pushes(self):
         self.init_git()
+        # strays are adopted only for a project whose memory this machine decided to keep in the store
+        write(
+            self.h(".config", "agent-mirror", "config.json"),
+            json.dumps({"projects": {"demo": self.project}, "choices": {"memory:demo": "merge"}}),
+        )
         write(
             self.s("memory", "demo", "new_fact.md"),
             "---\nname: new-fact\ndescription: test\nmetadata:\n  type: project\n  author: codex\n---\nbody\n",
@@ -202,6 +295,13 @@ class PortedTest(ToolTest):
         self.assertEqual(read(self.s("memory", "demo", "MEMORY.md")), STORE_INDEX)
         head = self.git("rev-parse", "HEAD")
         self.assertEqual(self.git("--git-dir", self.origin, "rev-parse", "refs/heads/main", cwd=self.base), head)
+
+    def test_sync_leaves_undecided_memory_alone(self):
+        self.init_git()
+        rc, out = self.run_tool("sync", env={"CLAUDECODE": "1"})
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("memory/demo/local_only.md", self.git("ls-files", "memory/demo").splitlines())
+        self.assertFalse(os.path.exists(self.s("memory", "demo", "local_only.md")))
 
     def other_clone_pushes(self, rel, text):
         """Simulate another machine pushing a change to the same store."""
@@ -250,7 +350,8 @@ class PortedTest(ToolTest):
         self.assertIn("memory index: " + self.s("memory", "demo", "MEMORY.md"), out)
 
     def test_session_start_cloud_syncs_and_installs(self):
-        # the project is found from the clone's origin URL, as in a cloud VM
+        # a fresh cloud machine; the project is found from the clone's origin URL, as in a cloud VM
+        self.make_fresh()
         self.git("init", "-q", cwd=self.project)
         self.git("remote", "add", "origin", "https://github.com/Example/demo.git", cwd=self.project)
         rc, out = self.run_tool(
@@ -312,11 +413,15 @@ class PortedTest(ToolTest):
             out,
         )
         self.assertIn("docs/slides: skipped (no such folder in the project)", out)
+        self.assertIn("would write the writer marker in-box/demo/_writer.json", out)
         rc, out = self.box_run("box", "push", "--dry-run", "--delete", env={"CLAUDECODE": "1"})
         self.assertEqual(rc, 0, out)
         self.assertIn("--delete-destination true", out)
         self.assertNotIn("--delete-destination false", out)
-        self.assertEqual(self.az_calls(), [])
+        # a dry run only reads the writer marker
+        names = [c["argv"][c["argv"].index("--name") + 1] for c in self.az_calls()]
+        self.assertEqual(names, ["demo/_writer.json", "demo/_writer.json"])
+        self.assertEqual(self.az_calls(), self.az_calls("storage", "blob", "download"))
 
     def test_box_push_syncs_each_root_and_refuses_cloud(self):
         write(self.p("temporary", "keep.txt"), "x\n")

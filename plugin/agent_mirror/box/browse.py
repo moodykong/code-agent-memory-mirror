@@ -26,6 +26,8 @@ def load_index(index_path):
                 r = json.loads(line)
             except ValueError:
                 continue
+            if not isinstance(r, dict) or not r.get("path") or "writer" in r:
+                continue  # the writer marker line, or anything that is not an entry
             (archives if r.get("archive") else files).append(r)
     return files, archives
 

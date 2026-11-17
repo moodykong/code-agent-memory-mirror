@@ -15,6 +15,7 @@ There are two Codex cloud products: the newer VM product and the legacy containe
   `~/code-agent-memory-mirror`, and link it onto PATH.
 @@PYTHON_LINE@@
 @@SETUP_LINE@@
+@@COMPANIONS_LINE@@
 - Run `agent-mirror init-store --adopt` and `install --agents codex`. Codex has no built-in
   memory folder: it reads `memory/<project>/MEMORY.md` in the store directly, as `AGENTS.md` says.
 - Write timings to `~/agent_setup_probe.txt`, and always exit 0.

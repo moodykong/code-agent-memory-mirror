@@ -6,6 +6,9 @@
 # <STORE_REPO_TOKEN> with a fine-grained token that can read and write ONLY the store repo
 # (write access lets `agent-mirror sync` push memory to an inbox branch; it never pushes to main).
 # Every step is allowed to fail; the script always exits 0.
+# Setup runs before the vendor sets its own session markers, so tell agent-mirror where it is:
+# a cloud machine never adopts local content and never publishes a machine profile.
+export AGENT_RUNTIME=claude-cloud
 STORE="$HOME/agent-mirror-store"
 @@PRELUDE@@
 
@@ -18,6 +21,8 @@ fi
 note "store cloned: $( [ -d "$STORE/.git" ] && echo yes || echo NO )"
 
 @@TOOL_STEP@@
+
+@@COMPANIONS_STEP@@
 
 @@PYTHON_STEP@@
 

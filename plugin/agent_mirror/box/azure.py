@@ -21,6 +21,7 @@ from agent_mirror.box import archive
 from agent_mirror.box.common import run_transfer
 from agent_mirror.box.local import FetchRecord, disk_guard
 from agent_mirror.box.sides import AzureSide
+from agent_mirror.box.writer import MARKER, index_line
 from agent_mirror.box.rules import exclude_rule, folder_files, include_root, is_env_file
 from agent_mirror.runtime import CLOUD_RUNTIMES
 from agent_mirror.util import err, local_path, out, short, show_cmd, utc_stamp, warn
@@ -235,6 +236,7 @@ def index(args, s, runtime):
     kept = left_out = calls = 0
     sidecars = []
     marker = None
+    has_marker = False
     start = time.time()
     partial = index_path + ".partial"
     try:
@@ -258,6 +260,9 @@ def index(args, s, runtime):
                     if not name:
                         continue
                     rel = name[cut:]
+                    if rel == MARKER:
+                        has_marker = True
+                        continue
                     if rel.startswith(archive.ARCHIVE_DIR + "/"):
                         if archive.sidecar_name(rel):
                             sidecars.append(archive.sidecar_name(rel))
@@ -273,6 +278,9 @@ def index(args, s, runtime):
                 AzureSide(s, "inbound"), sidecars, os.path.dirname(index_path), args.transfer_timeout
             ):
                 fh.write(json.dumps(entry) + "\n")
+            line = index_line(AzureSide(s, "inbound"), args.timeout) if has_marker else None
+            if line:
+                fh.write(json.dumps(line) + "\n")
         os.replace(partial, index_path)
     finally:
         if os.path.exists(partial):

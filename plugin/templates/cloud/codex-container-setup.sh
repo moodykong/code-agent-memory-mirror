@@ -6,6 +6,9 @@
 # named STORE_REPO_TOKEN. The script removes the token from the clone's remote at the end,
 # so the agent never sees it; as a result `agent-mirror sync` cannot push from the agent phase.
 # Every step is allowed to fail; the script always exits 0.
+# Setup runs before the vendor sets its own session markers, so tell agent-mirror where it is:
+# a cloud machine never adopts local content and never publishes a machine profile.
+export AGENT_RUNTIME=codex-cloud
 STORE="$HOME/agent-mirror-store"
 @@PRELUDE@@
 
@@ -17,6 +20,8 @@ fi
 note "store cloned: $( [ -d "$STORE/.git" ] && echo yes || echo NO )"
 
 @@TOOL_STEP@@
+
+@@COMPANIONS_STEP@@
 
 @@PYTHON_STEP@@
 

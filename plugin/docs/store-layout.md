@@ -19,6 +19,7 @@ The store is a git repo you own (keep it private). It holds data only, never a p
   projects/<project>/box_index.jsonl   written by `agent-mirror box index`
   projects/<project>/box_toc/<folder>.json[.gz]   tables of contents of archived folders, from `box index`
   projects/_example/env.json  a complete example; folders starting with "_" are ignored
+  machines/<machine name>.json   one non-secret profile per developer machine, written by `apply` and `install`
 ```
 
 ## store.json
@@ -58,8 +59,9 @@ On a developer machine, after the normal pull, `agent-mirror sync` fetches every
   `<stem>.from-<branch>.md` (not added to the index) and reported; a deletion is applied only when main
   has not changed the file;
 - runs the secret scan on what it would apply, and applies nothing from a branch that trips it;
-- NEVER applies changes outside `memory/` (instructions, skills, projects, store.json, anything else):
-  they are reported as "held for review" with the branch and file names;
+- NEVER applies changes outside `memory/` (instructions, skills, projects, machine profiles under
+  `machines/`, store.json, anything else): they are reported as "held for review" with the branch and
+  file names;
 - commits the applied changes as one commit per branch, pushes main, then deletes each branch whose
   changes were all handled. Branches with held changes, a secret-scan hit or a kept deletion stay.
 
@@ -108,23 +110,54 @@ Step kinds come from a fixed set: `network-hosts`, `env-values`, `setup-script`,
 `vm-start-skill.md`) and `"product": "container"` (`container-setup.sh`, also `container-maintenance.sh`).
 A variable's `recipe` is `none` when no recipe covers it.
 
-## Links that `install` makes
+## Links that `install` and `apply` make
 
-All links point from a home folder into the store, never the other way:
+All links point from a home folder into the store, never the other way. Which units get linked on a
+machine is decided per unit (see reconciliation.md); `install` links every unit that needs no decision.
 
 | Link | Target | For |
 | --- | --- | --- |
 | `<claude home>/CLAUDE.md` | `AGENTS.md` | Claude Code |
 | `<codex home>/AGENTS.md` | `AGENTS.md` | Codex |
-| `~/.agents/skills` | `skills/` | Codex and other agents that read shared skills |
+| `~/.agents/skills/<name>` | `skills/<name>` | Codex and other agents that read shared skills, one link per store skill |
 | `<claude home>/skills/<name>` | `skills/<name>` | Claude Code, one link per store skill |
 | `<claude home>/projects/<slug>/memory` | `memory/<memory_project>/` | Claude Code, per project |
 
-Other entries in `<claude home>/skills` are never touched. Anything a link replaces is moved to
-`~/.agent-mirror-backups/<timestamp>/` and listed in that folder's `manifest.json`, which records the
-link method (`symlink`, `junction` or `copy`). `uninstall` removes the links and puts the backups back.
-Before linking an existing real Claude memory folder, its files are copied into the store where the
-store lacks them; store files are never overwritten and conflicts are reported.
+A whole skills folder is never replaced by one link. (Versions before 0.3.0 linked `~/.agents/skills`
+as a whole; `plan` reports that as `skills-folder`, case `legacy-folder-link`, and `install` or `apply`
+converts it into a real folder with one link per skill.) When agent-mirror creates `~/.agents/skills`, the
+manifest records it, and `uninstall` removes it again once it is empty.
+
+Other entries in the skills folders are never touched: folders named `synced`, names starting with a
+dot, links into project repos, and skills recorded as kept local or skipped. Anything a link replaces is
+moved to `~/.agent-mirror-backups/<timestamp>/` and listed in that folder's `manifest.json`, which
+records the link method (`symlink`, `junction` or `copy`). `uninstall` removes the links and puts the
+backups back. A real Claude memory folder is merged into the store only when you choose `merge` (or
+`adopt` when the store has none): store files are never overwritten, and a file that differs on both
+sides is saved next to the store's as `<stem>.from-<machine name>.md`.
+
+## Machine profiles (`machines/`)
+
+After a real `apply` or `install` on a developer runtime, agent-mirror writes `machines/<machine
+name>.json` (only when something other than the date changed). It holds nothing secret and no home path
+outside the `~/...` form:
+
+```json
+{
+  "schema": 1,
+  "machine_id": "3f2a9c1e5b7d4e6f8a0b1c2d3e4f5a6b",
+  "machine_name": "my-laptop",
+  "platform": "linux",
+  "tool": "agent-mirror 0.3.0",
+  "date": "2026-11-17",
+  "agents": ["claude", "codex"],
+  "projects": {"my-project": {"paths": ["~/code/my-project"], "memory": "linked", "box_role": "writer"}},
+  "skills": {"linked": ["alpha", "beta"], "kept_local": ["my-draft"], "skipped": []}
+}
+```
+
+`sync` commits `machines/` with memory and skills. A profile pushed from a cloud session lands on an
+inbox branch and is held for review, like every other path outside `memory/`.
 
 ## Memory files
 
@@ -140,8 +173,10 @@ at the same time do not conflict.
 `box_index.jsonl` has one JSON object per line. A plain file: `{"path", "size", "modtime"}`. An archived
 folder: `{"path": "<folder>", "archive": true, "files", "bytes", "archive_bytes", "large_files",
 "large_bytes", "modtime", "toc": "box_toc/<folder>.json"}`; the table of contents file lists every file
-of the folder with its size and whether it is in the bundle or travels on its own. Commit the index and
-`box_toc/` so `agent-mirror box ls` works offline on other machines.
+of the folder with its size and whether it is in the bundle or travels on its own. When the box has a
+writer marker, one more line records it: `{"path": "_writer.json", "writer": {"machine_id",
+"machine_name", "date", "tool"}}` (readers skip it; `plan` uses it to name the writer). Commit the index
+and `box_toc/` so `agent-mirror box ls` and `agent-mirror plan` work offline on other machines.
 
 ## In the project folder (never committed)
 
@@ -152,8 +187,10 @@ the project are added there too.
 
 ## What `sync` commits
 
-Only `memory/`, `skills/`, `AGENTS.md` and `CLAUDE.md` (in a cloud session with `cloud_push: "inbox"`,
-pushed to an inbox branch instead of main). Changes to `store.json` and `projects/`
+Only `memory/`, `skills/`, `machines/`, `AGENTS.md` and `CLAUDE.md` (in a cloud session with
+`cloud_push: "inbox"`, pushed to an inbox branch instead of main). Before committing, `sync` copies files
+from a real (unlinked) Claude memory folder into the store only for a project whose memory this machine
+decided to keep there (a recorded `link`, `adopt` or `merge`). Changes to `store.json` and `projects/`
 (including rendered cloud files, the box index and `box_toc/`) are committed by hand. Before committing, `sync` scans the changed
 files for key-shaped strings and refuses if it finds any (it prints the file and pattern names only).
 It never force-pushes; a rebase conflict is aborted and the local commit is kept.
@@ -171,12 +208,18 @@ Not in the store: it lives at `${XDG_CONFIG_HOME:-~/.config}/agent-mirror/config
   "projects": {
     "my-project": "/home/you/code/my-project",
     "other": ["/home/you/code/other", "/home/you/worktrees/other-feature"]
-  }
+  },
+  "machine": {"id": "3f2a9c1e5b7d4e6f8a0b1c2d3e4f5a6b", "name": "my-laptop"},
+  "choices": {"skill:my-draft": "keep-local", "memory:my-project": "merge", "box:my-project": "writer"}
 }
 ```
 
 - `store_path`: the store folder (written by `init-store`).
 - `store_remote`: the store's git remote (used by `cloud render` when the clone has no `origin`).
 - `agents`: the default for `install --agents`.
-- `projects`: project name to checkout folder(s). `install` with no `--project` links the Claude memory
-  folder of every listed folder that exists; `install --project NAME --project-path PATH` adds to it.
+- `projects`: project name to checkout folder(s). `plan`, `apply` and `install` consider every listed
+  folder that exists; `--project NAME --project-path PATH` adds to it.
+- `machine`: this machine's stable id and its name (default: the host name). `init-store`, `install` and
+  `apply` create them; `agent-mirror machine --name NAME` changes the name.
+- `choices`: the action applied or chosen for each unit on this machine, including the box role per
+  project (`box:<project>`). See reconciliation.md.

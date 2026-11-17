@@ -3,7 +3,7 @@
 import os
 import shutil
 
-from agent_mirror import PLUGIN_ROOT, __version__, recipes
+from agent_mirror import PLUGIN_ROOT, __version__, machine, recipes
 from agent_mirror.box import describe_box
 from agent_mirror.config import config_projects
 from agent_mirror.hooks import status_line
@@ -25,6 +25,38 @@ def claude_md_state(store):
     return "MISSING (optional; init-store writes one)"
 
 
+BOX_TOOLS = {"az": "azure-blob", "rclone": "rclone"}
+
+
+def projects_by_store(store, ctx, d):
+    found = {}
+    for name in [n for n, _ in d.matched] + [n for n, _ in config_projects(ctx.config)]:
+        found[os.path.normcase(os.path.realpath(store.memory_store(name)))] = name
+    return found
+
+
+def unit_for_target(store, target, memory_names):
+    """The plan unit id a link target belongs to (for recorded choices), or None."""
+    t = os.path.normcase(os.path.realpath(target))
+    if t == os.path.normcase(os.path.realpath(store.path("AGENTS.md"))):
+        return None  # two units share this target; doctor shows the link state only
+    skills = os.path.normcase(os.path.realpath(store.path("skills")))
+    if os.path.dirname(t) == skills:
+        return "skill:%s" % os.path.basename(target)
+    if t in memory_names:
+        return "memory:%s" % memory_names[t]
+    return None
+
+
+def plan_counts(plan):
+    from agent_mirror.plan import CASE_ORDER
+
+    counts = {}
+    for u in plan.units:
+        counts[u["case"]] = counts.get(u["case"], 0) + 1
+    return [(c, counts[c]) for c in CASE_ORDER if c in counts]
+
+
 def cmd_doctor(args, ctx):
     plat = ctx.plat
     runtime = detect_runtime()
@@ -36,6 +68,11 @@ def cmd_doctor(args, ctx):
     if store is None:
         out("store: none. Run `agent-mirror init-store PATH` (or --adopt an existing store), or pass --store")
         return 0
+    mid, mname = machine.identity(ctx.config)
+    out(
+        "machine: %s"
+        % ("%s (id %s)" % (mname, mid[:12]) if mid else "no id yet (init-store, install or apply assigns one)")
+    )
     out("store: %s (from %s)" % (store.root, store.source))
     meta = store.meta()
     if meta:
@@ -81,18 +118,58 @@ def cmd_doctor(args, ctx):
             link, _ = memory_link_path(ctx, path, args.memory_dir if name == forced else None)
             items.append((link, store.memory_store(name)))
     counts = {}
+    recorded = machine.choices(ctx.config)
     for link, target in items:
         label, note = link_state(inst, link, target)
+        uid = unit_for_target(store, target, projects_by_store(store, ctx, d))
+        choice = recorded.get(uid) if uid else None
+        if label != "OK" and choice in machine.STICKY:
+            label, note = "DECIDED", "%s: %s (recorded for this machine)" % (uid, choice)
         counts[label] = counts.get(label, 0) + 1
         out("  %-10s %s (%s)" % (label, tilde(link), note))
     out("  summary: " + ", ".join("%d %s" % (v, k) for k, v in sorted(counts.items())))
+    try:
+        from agent_mirror.plan import Plan, gather_projects
+
+        plan = Plan(ctx, agents, gather_projects(ctx, [], discover=True, quiet=True))
+        waiting = plan.waiting()
+        out(
+            "plan: %s; %s"
+            % (
+                ", ".join("%d %s" % (n, c) for c, n in plan_counts(plan)) or "no units",
+                (
+                    "fresh (nothing waits for a choice)"
+                    if not waiting
+                    else "%d unit(s) wait for a choice: %s (agent-mirror plan)"
+                    % (len(waiting), ", ".join(u["id"] for u in waiting))
+                ),
+            )
+        )
+    except SystemExit:
+        out("plan: could not be built")
     out("hooks (claude): %s" % status_line(ctx))
     out("tools:")
+    names = store.project_names()
+    backends = {}
+    for name in names:
+        backend = str((store.load_env(name).get("box") or {}).get("backend") or "none").strip().lower()
+        backends.setdefault(backend, []).append(name)
     for tool in ("git", "uv", "az", "rclone"):
         path = shutil.which(tool)
-        out("  %-7s %s" % ("ok" if path else "MISSING", tool + (" (%s)" % path if path else "")))
+        users = backends.get(BOX_TOOLS.get(tool), []) if tool in BOX_TOOLS else None
+        if path:
+            out("  %-7s %s" % ("ok", "%s (%s)" % (tool, path)))
+        elif users is None:
+            out("  %-7s %s" % ("MISSING", tool))
+        elif users:
+            out("  %-7s %s (needed by the box of %s)" % ("MISSING", tool, ", ".join(users)))
+            out(
+                "    PROBLEM  %s is not installed, and the %s box of %s needs it"
+                % (tool, BOX_TOOLS[tool], ", ".join(users))
+            )
+        else:
+            out("  %-7s %s (no project's box uses %s)" % ("-", tool + " not needed", BOX_TOOLS[tool]))
     out("box:")
-    names = store.project_names()
     if not names:
         out("  (no projects/<name>/env.json in the store)")
     for name in names:

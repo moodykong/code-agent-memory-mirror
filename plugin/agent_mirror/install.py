@@ -123,6 +123,7 @@ class Installer:
         self.entries = []
         self.merges = []
         self.refreshed = []
+        self.replaced = []  # store files replaced by an adopt: [{"store_path", "old_copy"}]
         self.errors = []
         self.already = 0
         self.symlink = symlink
@@ -142,11 +143,13 @@ class Installer:
             items.append((p.join(p.claude_home(), "CLAUDE.md"), s.path("AGENTS.md"), False, False))
         if "codex" in agents:
             items.append((p.join(p.codex_home(), "AGENTS.md"), s.path("AGENTS.md"), False, False))
-        if agents:
-            items.append((p.agents_skills(), s.path("skills"), False, True))
-        if "claude" in agents:
+        # one link per store skill in the shared folder and in each agent's own skills folder;
+        # a whole skills folder is never replaced by one link
+        for _, folder in p.skill_folders(agents) if agents else []:
             for name in s.skill_names():
-                items.append((p.join(p.claude_home(), "skills", name), s.path("skills", name), False, True))
+                if name == "synced":
+                    continue
+                items.append((p.join(folder, name), s.path("skills", name), False, True))
         return items
 
     # safety -------------------------------------------------------------------
@@ -312,9 +315,9 @@ class Installer:
                 )
         return self.finish(agents, projects)
 
-    def finish(self, agents, projects):
+    def finish(self, agents, projects, label="install"):
         manifest = None
-        if (self.entries or self.merges or self.refreshed) and not self.dry_run:
+        if (self.entries or self.merges or self.refreshed or self.replaced) and not self.dry_run:
             os.makedirs(self.backup_root, exist_ok=True)
             manifest = os.path.join(self.backup_root, MANIFEST)
             data = {
@@ -328,18 +331,21 @@ class Installer:
                 "entries": self.entries,
                 "merges": self.merges,
                 "refreshed": self.refreshed,
+                "store_replaced": self.replaced,
                 "restored_at": None,
             }
             with open(manifest, "w", encoding="utf-8") as fh:
                 json.dump(data, fh, indent=2)
                 fh.write("\n")
-        changed = len(self.entries) + len(self.refreshed)
+        changed = len([e for e in self.entries if e.get("method") != "mkdir" or e.get("converted")])
+        changed += len(self.refreshed)
         if not changed and not self.errors:
-            out("install: nothing to change (%d links already correct)" % self.already)
+            out("%s: nothing to change (%d links already correct)" % (label, self.already))
         else:
             out(
-                "install: %d %s, %d already correct, %d refused%s"
+                "%s: %d %s, %d already correct, %d refused%s"
                 % (
+                    label,
                     changed,
                     "to change" if self.dry_run else "changed",
                     self.already,
@@ -366,39 +372,71 @@ def link_state(installer, link, target):
     return "MISSING", "install creates it"
 
 
-def cmd_install(args, ctx):
-    agents = parse_agents(args.agents) if args.agents else config_agents(ctx.config)
-    ctx.require_store()
-    projects = []
-    explicit = bool(args.project or args.project_path)
-    if explicit:
+def remember_project_quiet(ctx, name, path, dry_run):
+    """Add a project given on the command line to the config's projects map (never in a dry run)."""
+    if dry_run or not name or not path:
+        return
+    if remember_project(ctx.plat, name, path):
+        out("config: recorded project %s at %s in %s" % (name, path, tilde(ctx.plat.config_file())))
+
+
+def install_projects(ctx, args):
+    """[(project, path)] and {(project, path): memory folder override} for install, as before 0.3."""
+    projects, memory_dirs = [], {}
+    if args.project or args.project_path:
         if args.project and not args.project_path:
             err("--project needs --project-path (the folder where the project is checked out)")
-            return 2
+            raise SystemExit(2)
         name, path = resolve_project(ctx, args.project, args.project_path)
         if not name:
             err("could not tell which project %s is; pass --project" % path)
-            return 2
+            raise SystemExit(2)
         projects.append((name, path))
-    else:
         if args.memory_dir:
-            err("--memory-dir needs --project and --project-path")
-            return 2
-        for name, paths in config_projects(ctx.config):
-            for p in paths:
-                real = os.path.realpath(expand(p))
-                if os.path.isdir(real):
-                    projects.append((name, real))
-                else:
-                    warn("configured project %s: %s does not exist; skipped" % (name, p))
+            memory_dirs[(name, path)] = args.memory_dir
+        return projects, memory_dirs
+    if args.memory_dir:
+        err("--memory-dir needs --project and --project-path")
+        raise SystemExit(2)
+    for name, paths in config_projects(ctx.config):
+        for p in paths:
+            real = os.path.realpath(expand(p))
+            if os.path.isdir(real):
+                projects.append((name, real))
+            else:
+                warn("configured project %s: %s does not exist; skipped" % (name, p))
+    return projects, memory_dirs
+
+
+def cmd_install(args, ctx):
+    """install: for a fresh machine. It computes the plan, applies every unit that needs no decision,
+    and lists the units that wait for one (see `agent-mirror plan` and `agent-mirror apply`)."""
+    from agent_mirror.apply import apply_plan, write_machine_profile
+    from agent_mirror.plan import Plan
+
+    agents = parse_agents(args.agents) if args.agents else config_agents(ctx.config)
+    ctx.require_store()
+    projects, memory_dirs = install_projects(ctx, args)
+    plan = Plan(ctx, agents, projects, memory_dirs)
+    waiting = plan.waiting()
+    if getattr(args, "strict", False) and waiting:
+        err(
+            "this machine is not fresh: %d unit(s) wait for a choice (%s); nothing was changed. "
+            "Run `agent-mirror plan`, then `agent-mirror apply`." % (len(waiting), ", ".join(u["id"] for u in waiting))
+        )
+        return 4
     if args.dry_run:
         out("dry run: nothing will change")
-    inst = Installer(ctx, args.dry_run, memory_dir=args.memory_dir)
-    rc = inst.install(agents, projects)
-    if explicit and args.project_path and not args.dry_run and rc == 0:
+    if waiting:
+        out(
+            "this machine is not fresh (it has its own instructions, skills or memory): applying only the units "
+            "that need no decision"
+        )
+    rc, _ = apply_plan(ctx, plan, args.dry_run, "install")
+    if rc == 0 and (args.project or args.project_path):
         name, path = projects[0]
-        if remember_project(ctx.plat, name, path):
-            out("config: recorded project %s at %s in %s" % (name, path, tilde(ctx.plat.config_file())))
+        remember_project_quiet(ctx, name, path, args.dry_run)
+    write_machine_profile(ctx, plan, args.dry_run)
     return rc
 
 
@@ -414,9 +452,9 @@ def cmd_uninstall(args, ctx):
     stores = known_stores(ctx, manifests)
     copies = active_copies(p, manifests)
     candidates = [p.join(p.claude_home(), "CLAUDE.md"), p.join(p.codex_home(), "AGENTS.md"), p.agents_skills()]
-    skills_dir = p.join(p.claude_home(), "skills")
-    if os.path.isdir(skills_dir):
-        candidates += [os.path.join(skills_dir, n) for n in sorted(os.listdir(skills_dir))]
+    for skills_dir in (p.claude_skills(), p.agents_skills()):
+        if os.path.isdir(skills_dir) and not is_linklike(skills_dir):
+            candidates += [os.path.join(skills_dir, n) for n in sorted(os.listdir(skills_dir))]
     candidates += sorted(glob.glob(os.path.join(p.claude_home(), "projects", "*", "memory")))
     for _, data in manifests:
         candidates += [e.get("path") for e in data.get("entries", []) if e.get("path")]
@@ -451,6 +489,28 @@ def cmd_uninstall(args, ctx):
             continue
         for entry in reversed(data.get("entries", [])):
             backup, path = entry.get("backup"), entry.get("path")
+            if entry.get("created_dir") and path:
+                # a folder agent-mirror made (the shared skills folder): remove it once it is empty again
+                if os.path.isdir(path) and not is_linklike(path) and not os.listdir(path):
+                    out("%s folder %s" % ("would remove the empty" if dry else "removed the empty", tilde(path)))
+                    if not dry:
+                        os.rmdir(path)
+                elif os.path.isdir(path) and not is_linklike(path) and not dry:
+                    warn("%s is not empty; left in place" % tilde(path))
+                    problems += 1
+                    continue
+            if entry.get("converted") and backup:
+                # the old whole-folder link into the store is not put back: uninstall removes links into the store
+                if os.path.lexists(backup) and is_linklike(backup):
+                    lt = link_target(backup)
+                    if lt and any(within(lt, st) for st in stores):
+                        out(
+                            "%s the old whole-folder link kept at %s"
+                            % ("would drop" if dry else "dropped", tilde(backup))
+                        )
+                        if not dry:
+                            remove_link(backup)
+                        continue
             if not backup:
                 continue
             if not os.path.lexists(backup):

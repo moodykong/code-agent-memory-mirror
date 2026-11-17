@@ -18,6 +18,7 @@ from agent_mirror.box import archive
 from agent_mirror.box.common import run_transfer
 from agent_mirror.box.local import FetchRecord, disk_guard
 from agent_mirror.box.sides import RcloneSide
+from agent_mirror.box.writer import MARKER, index_line
 from agent_mirror.box.rules import folder_files
 from agent_mirror.runtime import CLOUD_RUNTIMES
 from agent_mirror.platforms import current
@@ -158,12 +159,16 @@ def index(args, s, runtime):
         return 1
     kept = left_out = 0
     sidecars = []
+    has_marker = False
     partial = index_path + ".partial"
     try:
         with open(partial, "w", encoding="utf-8") as fh:
             for it in sorted(items, key=lambda x: str(x.get("Path", ""))):
                 rel = str(it.get("Path") or "")
                 if not rel or it.get("IsDir"):
+                    continue
+                if rel == MARKER:
+                    has_marker = True
                     continue
                 if rel.startswith(archive.ARCHIVE_DIR + "/"):
                     if archive.sidecar_name(rel):
@@ -178,6 +183,9 @@ def index(args, s, runtime):
                 RcloneSide(s, "inbound"), sidecars, os.path.dirname(index_path), args.transfer_timeout
             ):
                 fh.write(json.dumps(entry) + "\n")
+            line = index_line(RcloneSide(s, "inbound"), args.timeout) if has_marker else None
+            if line:
+                fh.write(json.dumps(line) + "\n")
         os.replace(partial, index_path)
     finally:
         if os.path.exists(partial):

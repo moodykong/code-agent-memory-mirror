@@ -10,7 +10,7 @@ import json
 import os
 import re
 
-from agent_mirror import PLUGIN_ROOT, recipes, runbook
+from agent_mirror import PLUGIN_ROOT, companions, recipes, runbook
 from agent_mirror.envfile import placement_problem, privacy_words, write_secret_file
 from agent_mirror.util import err, expand, out, read_text, run, tilde, warn, write_text
 
@@ -86,6 +86,8 @@ def hosts_for(env, store_host, box):
         add(str(h).strip())
     add(store_host or "github.com")
     add("github.com")  # the public agent-mirror repo
+    for h in companions.hosts(env):
+        add(h)
     if env.get("python"):
         for h in PYTHON_HOSTS:
             add(h)
@@ -167,6 +169,9 @@ def render(ctx, store, project, vendors):
     commands = env.get("setup_commands") or []
     if not isinstance(commands, list) or not all(isinstance(c, str) for c in commands):
         raise ValueError("setup_commands in env.json must be a list of shell lines")
+    bad = companions.problems(env)
+    if bad:
+        raise ValueError("; ".join(bad) + " (in projects/%s/env.json)" % project)
     remote = store_remote(ctx, store)
     hp = repo_host_path(remote)
     if hp:
@@ -196,6 +201,14 @@ def render(ctx, store, project, vendors):
         fill(template("_python.sh"), values).rstrip("\n") if python else "# no python version in the project config"
     )
     values["SETUP_COMMANDS_STEP"] = setup_commands_step(project, commands)
+    values["COMPANIONS_STEP"] = companions.setup_step(project, env)
+    found = companions.entries(env)
+    values["COMPANIONS_LINE"] = (
+        "- Clones %d public companion repo(s) from `companion_repos` into `~/companions/` without a token; "
+        "`session-start` links each one next to the project clone as `../<dir>`." % len(found)
+        if found
+        else "- Clones no companion repos (env.json has no `companion_repos`)."
+    )
     values["PYTHON_LINE"] = (
         "- Installs Python %s with uv (and uv itself when it is missing)." % python
         if python

@@ -20,6 +20,7 @@ cloud vendor's settings page or in your local environment.
 | `box` | object | `box`, `doctor`, `probe --full`, `cloud render` | Where bulk files go. See below. |
 | `probe` | object | `probe`, `probe --full` | Extra checks. See below. |
 | `pointers_file` | path relative to the store root | `session-start` | A file you keep in the store that says where the project's large data lives. `session-start` prints its path so the agent can read it. The format is yours. |
+| `companion_repos` | list of `{"repo", "ref", "dir"}` | `cloud render`, `session-start` (cloud) | Public repos a cloud session needs next to the project but that cannot be attached to the session. See "Companion repos" below. |
 
 ## Commands that agent-mirror runs (`dependency_sync`, `session_start_commands`, `probe.commands`)
 
@@ -73,6 +74,28 @@ names that `env_var_names` does not list.
   after pasting. `agent-mirror clip copy FILE --secret` puts the file on the clipboard without printing it.
 - `agent-mirror cloud runbook --project NAME [--vendor claude|codex|all] [--json]` prints the setup
   steps for a person, or the runbook JSON (see store-layout.md).
+
+## Companion repos (`companion_repos`)
+
+A cloud session can only attach repos you own or were given access to. A public repo that the project
+expects next to its clone (a library checked out beside it, say) is cloned by the setup script instead:
+
+```json
+"companion_repos": [
+  {"repo": "https://github.com/example-org/helper-lib", "ref": "v1.2.0", "dir": "helper-lib"}
+]
+```
+
+- `cloud render` adds a step to every setup script that clones each entry into `~/companions/<dir>` at
+  `ref` without any token: `git init`, `git fetch --depth 1 origin <ref>`, `git checkout FETCH_HEAD`. A
+  failure is noted and never stops the script. The repo's host is added to the allowed hosts.
+- On a cloud runtime, `session-start` links `~/companions/<dir>` next to the project clone as `../<dir>`
+  when nothing is there yet (a link made in Python, no shell). Something already at `../<dir>` is left
+  alone.
+- `repo` must be a public `https://host/owner/name` URL (no credentials, port, query or other scheme).
+  `ref` is a branch, tag or commit (letters, digits, `.`, `_`, `/`, `-`). `dir` is one folder name: no
+  path separators and not dots only. Anything else makes `cloud render` stop with a clear message, and
+  `session-start` skips that entry with a warning.
 
 ## Sessions above several clones
 
@@ -142,6 +165,7 @@ Uses the Azure CLI (`az`) with Azure AD sign-in only (`--auth-mode login`, never
   prefixes and file names. Other shapes are refused with a clear message.
 - `box push` runs one `az storage blob sync` per include folder with `--delete-destination false`
   (pass `--delete` to delete remote files whose local file is gone). It is refused on a cloud runtime.
+  One machine writes each box: see "One writer per box" below.
 - `box fetch` downloads through a staging folder and never overwrites a local file on a local runtime.
 - `box send` uploads to `<outbound_container>/<prefix>/<runtime>-<UTC time>/<path>`, never overwriting.
 - On a cloud runtime, when `az account show` fails, agent-mirror signs `az` in as a service principal
@@ -201,6 +225,25 @@ and the table of contents: every file's relative path and size, marked `"in": "b
   that part of the bundle and lists the large files under it. A local runtime never overwrites existing
   files; a cloud runtime does.
 - `box send <folder> --archive` sends a folder to the outbound side as one `.tar.gz`.
+
+### One writer per box
+
+`box push` (both backends) writes `<inbound>/_writer.json` on the first push for a project: the
+machine id, machine name, date and tool version. A later push from a machine with another id is refused
+before any transfer, and the message names the current writer; `box push --take-over` makes this machine
+the writer. A machine whose recorded role for the project (`agent-mirror apply`, unit `box:<project>`)
+is `reader` or `none` is refused before anything else. `--dry-run` reads the marker and says what a push
+would do. `box index` records the marker in the index, so `agent-mirror plan` names the writer offline.
+On azure-blob the marker is `<inbound_container>/<prefix>/_writer.json`; on rclone it is
+`<inbound_remote>/_writer.json`. Neither `--delete` mode removes it.
+
+### What could go in the box (`box candidates`)
+
+`agent-mirror box candidates --project NAME --project-path PATH [--json] [--min-bytes N]` is a
+read-only helper: it lists the project's entries that git ignores or does not track (every top-level
+entry when the folder is not a git repo) with sizes, file counts, large files, newest change, a kind
+guess (`rebuildable`, `secret`, `worktree`, `candidate`) and whether `box.include` or `box.archives`
+already cover them. Details: reconciliation.md.
 
 ### On-demand retrieval
 

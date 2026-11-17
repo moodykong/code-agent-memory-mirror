@@ -11,7 +11,9 @@ from helpers import setUpModule  # noqa: F401 (the sandbox guard runs first)
 from helpers import make_home, make_store, reactivate_sandbox, read, remove_tree, write
 
 from agent_mirror.config import Context
+from agent_mirror.apply import apply_plan
 from agent_mirror.install import Installer, cmd_uninstall, link_state
+from agent_mirror.plan import Plan
 from agent_mirror.links import make_link
 from agent_mirror.platforms import Platform, claude_slug, find_claude_project_dir, slug_candidates
 from agent_mirror.runtime import detect_runtime
@@ -163,7 +165,9 @@ class LinkFallbackTest(unittest.TestCase):
         data = json.loads(read(manifest[0]))
         methods = {e["path"]: e["method"] for e in data["entries"]}
         self.assertEqual(methods[claude_md], "copy")
-        self.assertEqual(methods[os.path.join(home, ".agents", "skills")], "junction")
+        # one link per skill in the shared folder, never one link for the whole folder
+        self.assertEqual(methods[os.path.join(home, ".agents", "skills", "beta")], "junction")
+        self.assertNotIn(os.path.join(home, ".agents", "skills"), methods)
 
         inst = installer()
         self.assertEqual(link_state(inst, claude_md, os.path.join(store, "AGENTS.md"))[0], "COPY")
@@ -172,10 +176,19 @@ class LinkFallbackTest(unittest.TestCase):
             self.assertEqual(inst.install(["claude"], []), 0)
         self.assertIn("nothing to change", buf.getvalue())
 
+        # the plan sees the managed copy as linked, and as out of date once the store's file changes;
+        # apply then refreshes it (the old copy goes to the backup folder)
+        plan = Plan(ctx, ["claude"], [])
+        self.assertEqual(plan.unit("instructions:claude")["case"], "linked")
+        self.assertEqual(plan.unit("instructions:claude")["decision"], "none")
         write(os.path.join(store, "AGENTS.md"), "edited in the store\n")
+        plan = Plan(ctx, ["claude"], [])
+        unit = plan.unit("instructions:claude")
+        self.assertEqual((unit["case"], unit["decision"]), ("linked", "link"))
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            self.assertEqual(installer().install(["claude"], []), 0)
+            rc, _ = apply_plan(ctx, plan, False, "apply", installer=installer())
+        self.assertEqual(rc, 0, buf.getvalue())
         self.assertIn("refreshed the managed copy", buf.getvalue())
         self.assertEqual(read(claude_md), "edited in the store\n")
 

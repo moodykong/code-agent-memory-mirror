@@ -1,7 +1,7 @@
 # User instructions (all agents)
 
 This is the canonical user-level instruction file. It lives in your agent-mirror store as `AGENTS.md`.
-`~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` are links to it, made by `agent-mirror install`.
+`~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` are links to it, made by `agent-mirror install` or `agent-mirror apply`.
 `agent-mirror doctor` prints where the store is (the line that starts with `store:`).
 
 Edit this file to suit you. The sections below are a starting point.
@@ -19,7 +19,7 @@ Edit this file to suit you. The sections below are a starting point.
   ---
   The fact or rule. Then a **Why:** line and a **How to apply:** line.
   ```
-- Claude Code uses the store through its built-in memory folder (`~/.claude/projects/<slug>/memory`), which `agent-mirror install` links to the store.
+- Claude Code uses the store through its built-in memory folder (`~/.claude/projects/<slug>/memory`), which `agent-mirror install` or `agent-mirror apply` links to the store.
 - Any other agent (for example Codex) must read the index at the start of work (`agent-mirror session-start` prints its path). When it learns something durable, it adds or updates a memory file in the same format with `metadata.author: codex`, adds or updates the index line, then runs `agent-mirror sync`.
 - Memories are point-in-time notes. Check them against the current code before acting on them.
 - Never store secrets (keys, passwords, tokens, connection strings) in memory or anywhere else in the store.

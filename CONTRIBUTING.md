@@ -45,6 +45,45 @@ python3 -m unittest discover -s tests -p test_sandbox_guard.py
 
 New tests that start the program go through `ToolTest.run_tool` (or `helpers.sandbox_env`); never build
 an environment by hand. A test that only makes sense on one platform is skipped with a stated reason.
+The fake `rclone` keeps uploads when `FAKE_RCLONE_ROOT` is set (a folder standing in for every remote),
+like the fake `az` with `FAKE_AZ_ROOT`.
+
+The program never fetches into or checks out its own clone during a test run: the cloud self-update in
+`session-start` refuses a tool clone outside `AGENT_MIRROR_TEST_SANDBOX` (tests of the self-update use a
+copy of the plugin inside the sandbox, with a local bare repo as its origin).
+
+## Proving the real profile is untouched (native Windows, or any machine you are unsure about)
+
+Run the suite from a copy of the repo in a temp folder, never from a folder you work in, and fingerprint
+the real profile before and after. `tests/profile_fingerprint.py` only reads: names, kinds, link
+targets, sizes, modification times and SHA-256 of small files in every place agent-mirror could change
+(the Claude and Codex instruction files, Claude's settings and skills, every Claude memory folder, the
+shared skills folder, the agent-mirror config and cache folders, the backups and companions folders, and
+on Windows a read-only `schtasks /Query` for the timer task).
+
+```bat
+rem a copy of the repo under the Windows temp folder
+robocopy C:\path\to\code-agent-memory-mirror %TEMP%\am-check /E /XD .git __pycache__
+cd /d %TEMP%\am-check
+rem 1. prove the guard: every path must be inside the sandbox folder
+mkdir %TEMP%\am-guard\home
+set AGENT_MIRROR_HOME=%TEMP%\am-guard\home
+set AGENT_MIRROR_TEST_SANDBOX=%TEMP%\am-guard
+python plugin\bin\agent-mirror debug paths
+set AGENT_MIRROR_HOME=
+set AGENT_MIRROR_TEST_SANDBOX=
+python -m unittest discover -s tests -p test_sandbox_guard.py
+rem 2. the before-fingerprint, the full suite, the after-fingerprint
+python tests\profile_fingerprint.py > %TEMP%\am-before.json
+python -m unittest discover -s tests
+python tests\profile_fingerprint.py > %TEMP%\am-after.json
+python tests\profile_fingerprint.py --compare %TEMP%\am-before.json %TEMP%\am-after.json
+rem 3. clean up: the copy, the guard folder, the fingerprints and any agent-mirror-* temp folders
+```
+
+The compare must print `identical`. If anything differs, stop and find out why before running anything
+else. (A Claude Code session running at the same time on that machine can change its own memory
+folders; close it during the check.)
 
 ## Style
 

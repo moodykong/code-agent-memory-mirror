@@ -34,15 +34,31 @@ ln -s ~/code-agent-memory-mirror/plugin/bin/agent-mirror ~/.local/bin/agent-mirr
 agent-mirror init-store ~/agent-store --remote git@github.com:you/agent-store.git --commit
 git -C ~/agent-store push -u origin main
 
-# 3. link the agents' home folders into it (look first, then do it)
-agent-mirror install --dry-run --project my-project --project-path ~/code/my-project
+# 3. compare this machine with the store, unit by unit (read-only)
+agent-mirror plan --project my-project --project-path ~/code/my-project
+
+# 4a. a fresh machine (plan says "fresh: yes"): link everything
 agent-mirror install --project my-project --project-path ~/code/my-project
 
-# 4. keep it in sync
+# 4b. a lived-in machine (its own instructions, skills, memory): choose, then apply
+agent-mirror plan --json --project my-project --project-path ~/code/my-project > plan.json
+#     write choices.json, for example {"skill:my-draft": "adopt", "memory:my-project": "merge"}
+agent-mirror apply --dry-run --choices choices.json --project my-project --project-path ~/code/my-project
+agent-mirror apply --choices choices.json --project my-project --project-path ~/code/my-project
+
+# 5. keep it in sync
 agent-mirror hooks install     # Claude Code: session start, memory write and session end hooks
 agent-mirror timer install     # optional: sync every 30 minutes
 agent-mirror doctor            # what is linked, what is not
 ```
+
+`plan` compares each unit on its own: the instruction file per agent, each skill, each project's Claude
+memory folder and each project's box. A unit only this machine has is `first-setup` (adopt it into the
+store), one only the store has is `join` (link it), one both have with different content is `reconcile`
+(you choose), and identical or already linked units need nothing. `install` applies only what needs no
+decision and lists the rest; `apply` takes your choices from a JSON file. Nothing is replaced without a
+backup, and nothing is copied into the store before the secret scan passed. The table, the actions and
+the JSON: [plugin/docs/reconciliation.md](plugin/docs/reconciliation.md).
 
 On another machine, see "Join a second machine" below. To undo everything: `agent-mirror hooks uninstall`, `agent-mirror timer
 uninstall` and `agent-mirror uninstall` (it puts back whatever the links replaced).
@@ -70,7 +86,9 @@ git clone https://github.com/moodykong/code-agent-memory-mirror ~/code-agent-mem
 ln -s ~/code-agent-memory-mirror/plugin/bin/agent-mirror ~/.local/bin/agent-mirror
 git clone git@github.com:you/agent-store.git ~/agent-store
 agent-mirror init-store ~/agent-store --adopt          # writes the user config on this machine
-agent-mirror install --dry-run && agent-mirror install  # optional: link the agents here too
+agent-mirror plan                                      # what this machine has, unit by unit
+agent-mirror install                                   # fresh machine: link what needs no decision
+agent-mirror apply --choices choices.json              # lived-in machine: apply your choices
 agent-mirror cloud secrets --project my-project --check # which values this machine can produce
 agent-mirror cloud runbook --project my-project         # the steps to set up the cloud environment
 ```
@@ -86,16 +104,20 @@ on the vendor's settings page.
 | --- | --- |
 | `detect` | print the runtime: `claude-local`, `claude-cloud`, `codex-local`, `codex-cloud` or `unknown` |
 | `init-store PATH [--remote URL] [--adopt] [--commit]` | make a store from the template (git init), or adopt an existing store folder; writes the user config |
-| `install [--agents claude,codex] [--project NAME --project-path PATH] [--memory-dir PATH]` | link the home folders into the store, backing up whatever a link replaces |
+| `plan [--agents claude,codex] [--project NAME --project-path PATH]... [--json]` | compare this machine with the store unit by unit: `first-setup`, `join`, `reconcile`, `identical`, `nothing`, `linked`; read-only |
+| `apply [--choices FILE] [--only UNIT_ID ...] [--yes-defaults] [--dry-run]` | apply one action per unit (from the choices file, a recorded choice, or the default); units that need a choice wait |
+| `install [--agents claude,codex] [--project NAME --project-path PATH] [--memory-dir PATH] [--strict]` | for a fresh machine: apply every unit that needs no decision and list the rest (`--strict`: exit 4, change nothing, when the machine is not fresh) |
+| `machine [--name NAME]` | show this machine's id, name and recorded choices, or set its name |
 | `uninstall` | remove the links into the store and restore the backups |
 | `doctor` | runtime, config, store state, every expected link, hooks, tools, box settings |
-| `session-start` | pull the store; on a cloud runtime also dependency sync, project start commands and install; print the memory index path |
-| `sync [--message MSG]` | adopt stray memory files, secret scan, commit, `pull --rebase`, push (never force) |
+| `session-start` | pull the store; on a cloud runtime also update agent-mirror to the pinned ref, dependency sync, project start commands, install and companion repo links; print the memory index path |
+| `sync [--message MSG]` | adopt stray memory files (for projects this machine linked), secret scan, commit, `pull --rebase`, push (never force) |
 | `probe [--tcp HOST:PORT] [--url URL]`, `probe --full` | reachability and machine checks; `--full` is the long first-session report |
 | `hook memory-write` | hook handler: runs `sync` when the file just written is a store memory, skill or instruction file |
 | `hooks install\|uninstall\|status [--agent claude]` | add or remove the three Claude Code hooks in its user settings, keeping everything else |
 | `timer install\|uninstall\|status [--minutes 30]` | periodic `sync`: systemd user timer, launchd agent or Windows scheduled task |
-| `box push\|index`, `box fetch PATH [--all]`, `box send PATH [--archive]` | move bulk untracked files through Azure blob storage or any rclone remote, on demand |
+| `box push [--take-over]\|index`, `box fetch PATH [--all]`, `box send PATH [--archive]` | move bulk untracked files through Azure blob storage or any rclone remote, on demand; one machine writes each box |
+| `box candidates [--json] [--min-bytes N]` | list the project's untracked and ignored entries with sizes and a kind guess, to choose what goes in the box; read-only |
 | `box ls [PATH]`, `box status`, `box evict PATH` | browse the box offline, see what was fetched here, delete fetched copies to free disk |
 | `box receive [--into DIR]` | download the agents' results from the outbound side (developer machine) |
 | `box mount\|unmount [--cache-max-size 10G]` | rclone: mount the inbound side read-only with a capped cache (needs FUSE) |
@@ -154,6 +176,13 @@ kept out of the bundle and fetched only when named. Settings and rules:
   a project repo, inside this program, or inside an agent home folder.
 - Nothing is deleted without a backup: anything a link replaces is moved to
   `~/.agent-mirror-backups/<timestamp>/` with a manifest that `uninstall` uses to put it back.
+- Nothing on a lived-in machine is replaced without a decision: `install` and `apply` only touch units
+  that need none (`join`, `identical`, a legacy whole-folder link) unless you chose an action. A whole
+  skills folder is never replaced by one link; skills are linked one by one.
+- Before machine content is copied into the store (`adopt`, memory `merge`), the secret scan runs on it;
+  a hit refuses that unit and names the file and pattern only. Cloud sessions never adopt.
+- One machine writes each box: the first `box push` writes `_writer.json` on the inbound side, and other
+  machines are refused until one runs `box push --take-over`.
 - Never force push to the main branch. A rebase conflict is aborted and the local commit is kept.
 - Cloud sessions push to an inbox branch, never to the main branch (`"cloud_push": "inbox"` in store.json,
   the default). A developer machine's `sync` applies memory from those branches automatically and holds

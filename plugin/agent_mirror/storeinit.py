@@ -7,7 +7,7 @@ project repo, inside this tool, or inside an agent's home folder.
 import os
 import shutil
 
-from agent_mirror import DEFAULT_REF, PLUGIN_ROOT, STORE_SCHEMA, TOOL_REPO
+from agent_mirror import DEFAULT_REF, PLUGIN_ROOT, STORE_SCHEMA, TOOL_REPO, machine
 from agent_mirror.config import dump_json, load_json_file, load_user_config, save_user_config
 from agent_mirror.util import (
     err,
@@ -78,6 +78,7 @@ def record_in_config(ctx, path, remote, dry_run):
         out("config: store_path changed from %s to %s in %s" % (old, path, where))
     else:
         out("config: store_path %s in %s" % (path, where))
+    machine.ensure(ctx.plat)
 
 
 def git_ident():
@@ -132,7 +133,10 @@ def create(ctx, path, args):
             return 1
         out("git: committed the skeleton")
     record_in_config(ctx, path, args.remote, False)
-    out("next: edit %s, then run `agent-mirror install --dry-run`" % os.path.join(path, "AGENTS.md"))
+    out(
+        "next: edit %s, then run `agent-mirror plan` (a fresh machine: `agent-mirror install --dry-run`)"
+        % os.path.join(path, "AGENTS.md")
+    )
     if args.remote:
         out("      and push once by hand: git -C %s push -u origin main" % path)
     return 0

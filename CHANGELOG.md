@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.3.0
+
+- Cloud setup scripts export AGENT_RUNTIME, because the vendor runs them before it sets its own session markers. Without it, install during setup looked like a developer machine and wrote a machine profile into the store, which every cloud sync then pushed and a developer machine held for review. Sync on a cloud runtime also leaves `machines/` out of its commits.
+
+- Per-unit reconciliation. `agent-mirror plan` (read-only, `--json`) compares this machine with the store
+  for every unit: the instruction file per agent, each skill by name (compared by content), each
+  project's Claude memory folder and each project's box. Cases: `first-setup` (only this machine has it),
+  `join` (only the store has it), `reconcile` (both, different), `identical`, `nothing`, `linked`, plus
+  `external` (a skill linked into a project repo) and `legacy-folder-link`. It ends by saying whether the
+  machine is fresh (nothing waits for a choice). See plugin/docs/reconciliation.md.
+- `agent-mirror apply [--choices FILE] [--only UNIT_ID ...] [--yes-defaults] [--dry-run]` applies one
+  action per unit: skills `adopt`, `keep-local`, `link`, `skip`, `take-store`, `keep-machine`;
+  instructions `adopt`, `link`, `take-store`, `keep-local`; memory `adopt`, `link`, `merge`, `skip`; box
+  `writer`, `reader`, `none` (a role only); `convert` for a legacy whole-folder skills link. Units that
+  need a choice wait. Everything replaced is backed up and `uninstall` restores it. The secret scan runs
+  before anything is copied into the store. Cloud runtimes never adopt.
+- `install` is for fresh machines: it applies every unit that needs no decision, lists the units waiting
+  for a choice and says to run `agent-mirror plan`. `--strict` exits with code 4 and changes nothing when
+  the machine is not fresh. Skills are linked one by one into the shared skills folder; a whole skills
+  folder is never replaced by one link, and the old whole-folder link is converted.
+- Machine identity: a stable id and a name (default: the host name) in the user config, made by
+  `init-store`, `install` and `apply`; `agent-mirror machine [--name NAME]`. Recorded choices live there
+  too. After a real apply on a developer runtime a non-secret profile goes to `machines/<name>.json` in
+  the store; `sync` commits `machines/`, and from a cloud session it is held for review.
+- `sync` copies a real (unlinked) Claude memory folder into the store only for a project whose memory
+  this machine decided to keep there (before, any folder whose name ended with a project name).
+- One writer per box: the first `box push` writes `<inbound>/_writer.json`; pushes from another machine
+  are refused until `box push --take-over`; a machine whose recorded role is `reader` or `none` is refused
+  before any transfer. Both backends, and `--dry-run`. `box index` records the marker in the index.
+- `agent-mirror box candidates`: a read-only list of untracked and ignored entries with sizes, large
+  files, newest change, a kind guess (`rebuildable`, `secret`, `worktree`, `candidate`) and box coverage.
+- `companion_repos` in env.json: public repos that a cloud session cannot attach. `cloud render` adds a
+  token-free clone step into `~/companions/<dir>`; cloud `session-start` links them as `../<dir>` beside
+  the project clone.
+- Cloud `session-start` updates agent-mirror's own clone to the ref pinned in store.json (when its origin
+  matches) and runs the new code once. In a test sandbox it never touches a clone outside the sandbox.
+- `probe --full` tests a sub-path fetch from an archive when the index has no small loose file, then
+  evicts it. `doctor` reports a missing `az` or `rclone` as a problem only when a project's box needs it,
+  shows the machine and a plan summary, and marks links decided against as `DECIDED`.
+- Tests: plan and apply for every case and unit kind, the writer marker on both backends, candidates,
+  companions, the self-update with a local bare repo. `tests/profile_fingerprint.py` and CONTRIBUTING.md
+  describe the read-only before and after check of a real profile.
+
 ## 0.2.1
 
 - Verified on Claude Code on the web (2026-11): setup script timing, store clone by token at setup, user-level hooks written by the setup script, rclone box through the proxy (list, fetch, send), public companion repo cloned at setup, memory round trip through an inbox branch. Finding: inside a running session GitHub is reached only through the vendor proxy, so the store repo must be selected in the session; the Claude runbook now says so.

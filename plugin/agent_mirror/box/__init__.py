@@ -8,11 +8,11 @@ Backends: azure-blob (Azure CLI), rclone, or none.
 
 import os
 
-from agent_mirror.box import archive, azure, browse, extras, rclone
+from agent_mirror.box import archive, azure, browse, extras, rclone, writer
 from agent_mirror.box.common import box_context
 from agent_mirror.box.rules import azure_rule_problems, clean_rel, generic_rule_problems, is_env_file
 from agent_mirror.box.sides import side_for
-from agent_mirror.runtime import detect_runtime
+from agent_mirror.runtime import CLOUD_RUNTIMES, detect_runtime
 from agent_mirror.util import err, local_path
 
 BACKEND_MODULES = {"azure-blob": azure, "rclone": rclone}
@@ -26,6 +26,10 @@ def cmd_box(args, ctx):
         return browse.cmd_evict(args, ctx)
     if action == "rclone-env":
         return extras.cmd_rclone_env(args, ctx)
+    if action == "candidates":
+        from agent_mirror.box.candidates import cmd_candidates
+
+        return cmd_candidates(args, ctx)
     rel = None
     if action in ("fetch", "send"):
         rel = clean_rel(args.path)
@@ -41,6 +45,10 @@ def cmd_box(args, ctx):
     backend = BACKEND_MODULES[s["backend"]]
     runtime = detect_runtime()
     if action == "push":
+        if runtime not in CLOUD_RUNTIMES and os.path.isdir(s["project_path"]):
+            rc = writer.guard(args, s, ctx)
+            if rc is not None:
+                return rc
         return backend.push(args, s, runtime)
     if action == "index":
         return backend.index(args, s, runtime)
