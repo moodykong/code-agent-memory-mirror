@@ -72,6 +72,51 @@ DEMO_BOX = {
 }
 
 
+def windows_drive_mounts(mounts_file="/proc/self/mounts"):
+    """Where WSL mounts the Windows drives (/mnt/c and the like): drvfs mounts (9p with aname=drvfs on WSL 2)."""
+    found = []
+    try:
+        with open(mounts_file, encoding="utf-8", errors="replace") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return found
+    for line in lines:
+        fields = line.split()
+        if len(fields) < 4:
+            continue
+        point = re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), fields[1])
+        if fields[2] == "drvfs" or (fields[2] == "9p" and "aname=drvfs" in fields[3]):
+            found.append(point.rstrip("/") or "/")
+    return found
+
+
+def trimmed_path(path, mounts=None, tools=("git", "bash", "sh", "timeout", "az", "rclone")):
+    """PATH for the tests: on WSL, without the Windows folders that WSL appends (/mnt/c/...).
+
+    A program lookup in such a folder is a slow file-system call across the virtual machine boundary, and
+    WSL appends dozens of them: a real rclone looks for clipboard programs in every PATH folder when it
+    starts and spends about a second there, and every lookup of a missing tool costs as much. No test needs
+    a Windows program (a Linux PATH lookup never finds a .exe by its plain name). PATH stays as it is when
+    leaving them out would change where one of `tools` is found, so the same tests run and skip.
+    """
+    if not sys.platform.startswith("linux") or not path:
+        return path
+    mounts = windows_drive_mounts() if mounts is None else mounts
+    if not mounts:
+        return path
+
+    def on_windows_drive(folder):
+        return any(folder == m or folder.startswith(m + "/") for m in mounts if m != "/")
+
+    kept = os.pathsep.join(p for p in path.split(os.pathsep) if not on_windows_drive(p))
+    if any(shutil.which(t, path=path) != shutil.which(t, path=kept) for t in tools):
+        return path
+    return kept
+
+
+os.environ["PATH"] = trimmed_path(os.environ.get("PATH", ""))
+
+
 def remove_tree(path):
     """Delete a test folder completely. On Windows, git object files are read-only and shutil.rmtree with
     ignore_errors would silently leave them (and the folder) behind, so clear the attribute and retry."""
@@ -807,6 +852,25 @@ class ToolTest(unittest.TestCase):
         if blobs is not None:
             env["FAKE_AZ_BLOBS"] = os.path.join(self.base, "blobs.json")
             write(env["FAKE_AZ_BLOBS"], json.dumps(blobs))
+        return env
+
+    def without_real_transfer_tools(self, env=None):
+        """env (for run_tool) with a fake for each of az and rclone that PATH would find outside the sandbox.
+
+        `probe --full` asks every transfer program on PATH for its version, and the real `az --version` checks
+        online for updates; a test never starts either one. Where neither is installed, nothing changes.
+        """
+        env = dict(env or {})
+        path = env.get("PATH", os.environ.get("PATH", ""))
+        folder = None
+        for name, source in (("az", FAKE_AZ), ("rclone", FAKE_RCLONE)):
+            found = shutil.which(name, path=path)
+            if found and not path_inside(found, self.base):
+                folder = install_fake(self.base, name, source, folder="offlinebin")
+        if folder:
+            env["PATH"] = folder + os.pathsep + path
+            env.setdefault("FAKE_AZ_LOG", os.path.join(self.base, "offline_az_log.jsonl"))
+            env.setdefault("FAKE_RCLONE_LOG", os.path.join(self.base, "offline_rclone_log.jsonl"))
         return env
 
     def az_calls(self, *argv_start):

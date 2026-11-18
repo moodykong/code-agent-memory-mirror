@@ -284,7 +284,7 @@ class NotesMixin:
 
     def test_probe_full_sends_its_test_file_with_a_note(self):
         c = self.checkout("cloud-c")
-        env = dict(self.tool_env(), AGENT_RUNTIME="claude-cloud")
+        env = self.without_real_transfer_tools(dict(self.tool_env(), AGENT_RUNTIME="claude-cloud"))
         rc, out = self.run_tool("probe", "--full", "--project", "demo", "--project-path", c, env=env, timeout=600)
         self.assertEqual(rc, 0, out)
         sid = self.session_of(c)

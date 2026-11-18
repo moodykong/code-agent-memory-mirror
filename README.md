@@ -263,14 +263,16 @@ together with the case of one Windows PC with WSL (two homes, two installs, one 
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests
+python3 tests/run_parallel.py                  # in parallel (--jobs N, default the CPU count)
+python3 -m unittest discover -s tests          # serial, in one process
 ```
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) first. The tests run `agent-mirror` only inside a sandbox guard:
 `AGENT_MIRROR_HOME` moves every home-like location into a throwaway folder, and with
 `AGENT_MIRROR_TEST_SANDBOX` set every command exits with code 97 if any location is outside it. The test
 run refuses to start unless `agent-mirror debug paths` shows every location inside the sandbox. Fake `az`,
-`rclone` and clipboard programs stand in for the real ones. The suite passes on Linux (Python 3.9, 3.10)
+`rclone` and clipboard programs stand in for the real ones; a few test classes also run a real `rclone`,
+when one is installed, against local folders only (its own config in the sandbox, no network). The suite passes on Linux (Python 3.9, 3.10)
 and natively on Windows 11 (Python 3.11).
 
 ## License

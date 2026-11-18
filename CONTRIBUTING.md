@@ -26,8 +26,10 @@ and it changed the real user profile. Since then:
 5. **In-process tests** build a `Platform` from an injected environment (or rely on the sandboxed one
    `helpers` activates) and call `helpers.reactivate_sandbox()` afterwards; they never read the real
    environment's home.
-6. **Fake tools only.** `az`, `rclone` and clipboard tools are fakes written by `helpers.install_fake`
-   (a Python script, plus a `.cmd` shim on Windows). Nothing reaches a network, a cloud account, a real
+6. **Fake tools, and a real `rclone` only against local folders.** `az`, `rclone` and clipboard tools are
+   fakes written by `helpers.install_fake` (a Python script, plus a `.cmd` shim on Windows). The one
+   exception: the `Rclone*Real*` and `RcloneLocalArchiveTest` classes run a real `rclone`, when one is
+   installed, against folders in the sandbox with a sandboxed `RCLONE_CONFIG`; they are skipped without it. Nothing reaches a network, a cloud account, a real
    scheduler or a real clipboard. A cloud `session-start` lists the box only with a transfer program
    inside the sandbox (the fakes): a real `az` or `rclone` elsewhere on PATH is never started by it in a
    test run, and it reads the committed index instead.
@@ -35,9 +37,37 @@ and it changed the real user profile. Since then:
 ## Running the tests
 
 ```bash
-python3 -m unittest discover -s tests          # Linux, macOS
-python -m unittest discover -s tests           # Windows
+python3 tests/run_parallel.py                  # fast: in parallel (Linux, macOS)
+python tests\run_parallel.py                   # fast: in parallel (Windows)
+python3 -m unittest discover -s tests          # serial, in one process (Linux, macOS)
+python -m unittest discover -s tests           # serial, in one process (Windows)
 ```
+
+`tests/run_parallel.py` (standard library only) runs every test class in its own Python process, at most
+`--jobs N` at a time (default: the CPU count; `--jobs 1` runs one class after the other). `--split file`
+makes one process per test file instead, `--timeout SECONDS` (default 900) stops a process that hangs, `-v`
+prints every process's full output, and file names (or patterns) run only those files:
+`python3 tests/run_parallel.py test_box_notes.py`. It prints one line per class as it finishes (with what
+the tests print, such as the call-count tables, and the full output of a class that failed), one line per
+file, the skipped tests with their reasons, and one summary line, `Ran N tests in S s with --jobs J: OK`
+or `FAILED (...)`. The exit code is 0 when every collected test ran and passed, 97 when the sandbox guard
+stopped a worker, and 1 otherwise. Every worker gets its own temp folder (TMPDIR, TEMP and TMP), with its
+own `AGENT_MIRROR_HOME` and `AGENT_MIRROR_TEST_SANDBOX` inside it, and imports `helpers`, so the sandbox
+guard runs in every worker before any test; the run's temp folder is removed at the end.
+
+**New tests must be safe to run in parallel.** Classes run at the same time, in any order, each in its own
+process:
+
+- make every folder with `tempfile` (ToolTest's `self.base` is one) and never use a fixed path, file name,
+  port or other shared resource outside it;
+- never change anything another process could see: the repo and its git state, a git config outside the
+  sandbox, a global cache, another class's files;
+- sharing within one class (`setUpClass`, a class attribute) is fine; between classes or files it is not;
+- a test that measures time keeps a generous bound, since the workers compete for the CPU.
+
+On WSL, `helpers` leaves the Windows folders that WSL appends to PATH (`/mnt/c/...`) out of the PATH the
+tests use, unless that would change where git, bash, sh, timeout, az or rclone is found: every program
+lookup there is slow, and a real rclone start spent about a second looking through them.
 
 On a machine where you are unsure, run the guard tests alone first and read the paths:
 

@@ -156,7 +156,7 @@ class ProbeArchiveTest(ToolTest):
         rc, out = self.box_run("box", "index", az=dict(az, CLAUDECODE="1"))
         self.assertEqual(rc, 0, out)
         shutil.rmtree(ws)
-        env = dict(az, AGENT_RUNTIME="claude-cloud")
+        env = self.without_real_transfer_tools(dict(az, AGENT_RUNTIME="claude-cloud"))
         rc, out = self.run_tool(
             "probe", "--full", "--project", "demo", "--project-path", self.project, env=env, timeout=300
         )

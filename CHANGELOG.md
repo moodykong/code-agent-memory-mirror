@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+Faster tests; no change to the program.
+
+- **`python3 tests/run_parallel.py`** runs the suite in parallel: every test class in its own Python process
+  (`--jobs N`, default the CPU count; `--split file`; `--timeout SECONDS`), each with its own temp folder,
+  `AGENT_MIRROR_HOME` and `AGENT_MIRROR_TEST_SANDBOX`, and the sandbox guard in every worker. It prints the
+  call-count tables, the full output of what failed, the skipped tests with their reasons and one summary
+  line. CONTRIBUTING.md says how to use it and that new tests must be safe to run in parallel. The serial
+  `python3 -m unittest discover -s tests` works as before.
+- **WSL: the tests leave the Windows folders (`/mnt/c/...`) out of PATH** when that changes no lookup of git,
+  bash, sh, timeout, az or rclone. Every program lookup there is slow: a real rclone start spent about a
+  second in them, which made the real-rclone tests take most of the run.
+- **No real `az` or `rclone --version` from `probe --full` tests.** Three of them found the real programs on
+  PATH (and the real `az --version` checks online for updates); they now put fakes in front, as the other
+  probe tests do. Their assertions are unchanged.
+- Measured on a 20-CPU WSL 2 machine: the serial run went from about 380 s to about 120 s, and the parallel
+  run takes about 25 s (about 40 s with `--jobs 4`). Elsewhere only the parallel gain applies.
+
 ## 0.5.3
 
 Notes that travel with the box's files, and two fixes from a real Windows 11 machine.

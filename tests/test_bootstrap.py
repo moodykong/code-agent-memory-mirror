@@ -120,7 +120,8 @@ class BootstrapCommandTest(ToolTest):
         self.assertEqual(read(self.marker), "committed %s\n" % self.store)  # nothing more ran
         # a project it could not set up is recorded without inputs, so a later session start sets it up
         self.assertIsNone(self.stamp()["projects"]["demo"]["inputs"])
-        rc, out = self.run_tool("probe", "--full", env={"AGENT_RUNTIME": "claude-cloud"}, timeout=300)
+        env = self.without_real_transfer_tools({"AGENT_RUNTIME": "claude-cloud"})
+        rc, out = self.run_tool("probe", "--full", env=env, timeout=300)
         self.assertEqual(rc, 0, out)
         self.assertIn("demo: not set up (the store's checkout is on the inbox branch", out)
 
