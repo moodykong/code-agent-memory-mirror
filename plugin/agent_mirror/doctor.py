@@ -128,10 +128,12 @@ def cmd_doctor(args, ctx):
         counts[label] = counts.get(label, 0) + 1
         out("  %-10s %s (%s)" % (label, tilde(link), note))
     out("  summary: " + ", ".join("%d %s" % (v, k) for k, v in sorted(counts.items())))
+    checkouts = list(d.matched)  # (project, local path) pairs, for the box overlap warnings
     try:
         from agent_mirror.plan import Plan, gather_projects
 
         plan = Plan(ctx, agents, gather_projects(ctx, [], discover=True, quiet=True))
+        checkouts += [pair for pair in plan.projects if pair not in checkouts]
         waiting = plan.waiting()
         out(
             "plan: %s; %s"
@@ -173,12 +175,14 @@ def cmd_doctor(args, ctx):
     if not names:
         out("  (no projects/<name>/env.json in the store)")
     for name in names:
-        lines, problems = describe_box(store.load_env(name))
+        lines, problems, warnings = describe_box(store.load_env(name), [p for n, p in checkouts if n == name])
         out("  %s: %s" % (name, lines[0]))
         for line in lines[1:]:
             out("    " + line)
         for p in problems:
             out("    PROBLEM  %s" % p)
+        for w in warnings:
+            out("    warning  %s" % w)
     out("secrets (recipes in env.json):")
     for name in names:
         env = store.load_env(name)

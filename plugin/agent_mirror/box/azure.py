@@ -17,12 +17,12 @@ import shutil
 import tempfile
 import time
 
-from agent_mirror.box import archive
+from agent_mirror.box import archive, owners
 from agent_mirror.box.common import run_transfer
 from agent_mirror.box.local import FetchRecord, disk_guard
 from agent_mirror.box.sides import AzureSide
-from agent_mirror.box.writer import MARKER, index_line
-from agent_mirror.box.rules import exclude_rule, folder_files, include_root, is_env_file
+from agent_mirror.box.rules import exclude_rule, folder_files, is_env_file
+from agent_mirror.box.units import archive_unit_of
 from agent_mirror.runtime import CLOUD_RUNTIMES
 from agent_mirror.util import err, local_path, out, short, show_cmd, utc_stamp, warn
 
@@ -41,6 +41,10 @@ def az_failed(what, rc, stdout, stderr):
     if "az login" in detail or "AADSTS" in detail or "not logged in" in detail.lower():
         err("check the az sign-in (`az account show`); on a cloud runtime agent-mirror signs in from AZURE_* itself")
     return 1
+
+
+def ready(dry_run):
+    return az_ready(dry_run)
 
 
 def az_ready(dry_run):
@@ -124,20 +128,23 @@ def find_dirs(source, name_globs, pruned):
     return sorted(found)
 
 
-def sync_plan(s):
-    """One `az storage blob sync` per include root, with excludes made relative to that root."""
+def sync_plan(s, roots, archived=()):
+    """One `az storage blob sync` per include root, with excludes made relative to that root.
+
+    archived: the archived folders found here; those inside a root are left out of its sync.
+    """
     rules = [exclude_rule(p) for p in s["exclude"]]
     names = [v for k, v in rules if k == "name"]
     dir_globs = [v for k, v in rules if k == "dir"]
     paths = [v for k, v in rules if k == "path"]
     plan = []
-    for root in [include_root(p) for p in s["include"]]:
-        step = {"root": root, "source": os.path.join(s["project_path"], root)}
+    for root in roots:
+        step = {"root": root, "source": os.path.join(s["project_path"], *root.split("/"))}
         covering = [p for p in paths if root == p or root.startswith(p + "/")]
         top = root.split("/")[0]
         if top == archive.ARCHIVE_DIR:
             step["skip"] = "the folder name %s is reserved for archives" % archive.ARCHIVE_DIR
-        elif archive.matches(top, s.get("archives") or []):
+        elif archive_unit_of(root, s.get("archives") or []):
             step["skip"] = "archived as one bundle (box.archives)"
         elif covering:
             step["skip"] = "the whole folder matches the exclude pattern %s/**" % covering[0]
@@ -145,6 +152,7 @@ def sync_plan(s):
             step["skip"] = "no such folder in the project"
         else:
             ex = [p[len(root) + 1 :] + "/" for p in paths if p.startswith(root + "/")]
+            ex += [a[len(root) + 1 :] + "/" for a in archived if a.startswith(root + "/")]
             if dir_globs:
                 ex += find_dirs(step["source"], dir_globs, ex)
             bad = [p for p in ex if ";" in p]
@@ -172,42 +180,39 @@ def sync_cmd(s, step, delete):
     return cmd + ["--only-show-errors"]
 
 
-def push(args, s, runtime):
-    if runtime in CLOUD_RUNTIMES:
-        err("refusing box push on %s: only the developer machine writes the inbound side" % runtime)
-        return 2
-    if not os.path.isdir(s["project_path"]):
-        err("project folder %s does not exist" % s["project_path"])
-        return 1
-    if args.dry_run:
-        out("dry run: nothing will change")
-    if not az_ready(args.dry_run):
-        return 1
-    if args.delete:
-        warn("--delete: blobs under %s/%s/ that are gone locally will be deleted" % (s["inbound"], s["prefix"]))
-    failures = 0
-    for step in sync_plan(s):
-        if step.get("skip"):
-            out("%s: skipped (%s)" % (step["root"], step["skip"]))
-            continue
-        if step.get("error"):
-            err("%s: not synced: %s" % (step["root"], step["error"]))
-            failures += 1
-            continue
-        cmd = sync_cmd(s, step, args.delete)
-        out("%s: %s" % ("would run" if args.dry_run else "running", show_cmd(cmd)))
-        if args.dry_run:
-            continue
-        start = time.time()
-        rc, _, stderr = run_az(cmd[1:], args.transfer_timeout, capture=False)
-        took = time.time() - start
-        if rc != 0:
-            err("sync of %s failed after %.1f s (%s)" % (step["root"], took, stderr or "rc %s" % rc))
-            failures += 1
+def push_folders(args, s, layout, folder_units):
+    """az storage blob sync for the include folders of these units. Returns (names that succeeded, failures).
+
+    owners.push decides which units this machine pushes; this never touches another unit's folder.
+    """
+    done, failures = [], 0
+    for unit in folder_units:
+        ok = True
+        for step in sync_plan(s, unit["roots"], layout.archives):
+            if step.get("skip"):
+                out("%s: skipped (%s)" % (step["root"], step["skip"]))
+                continue
+            if step.get("error"):
+                err("%s: not synced: %s" % (step["root"], step["error"]))
+                ok = False
+                continue
+            cmd = sync_cmd(s, step, args.delete)
+            out("%s: %s" % ("would run" if args.dry_run else "running", show_cmd(cmd)))
+            if args.dry_run:
+                continue
+            start = time.time()
+            rc, _, stderr = run_az(cmd[1:], args.transfer_timeout, capture=False)
+            took = time.time() - start
+            if rc != 0:
+                err("sync of %s failed after %.1f s (%s)" % (step["root"], took, stderr or "rc %s" % rc))
+                ok = False
+            else:
+                out("synced %s to %s/%s/%s/ in %.1f s" % (step["root"], s["inbound"], s["prefix"], step["root"], took))
+        if ok:
+            done.append(unit["name"])
         else:
-            out("synced %s to %s/%s/%s/ in %.1f s" % (step["root"], s["inbound"], s["prefix"], step["root"], took))
-    failures += archive.push_archives(args, s, AzureSide(s, "inbound"))
-    return 1 if failures else 0
+            failures += 1
+    return done, failures
 
 
 # index -------------------------------------------------------------------------------
@@ -236,7 +241,7 @@ def index(args, s, runtime):
     kept = left_out = calls = 0
     sidecars = []
     marker = None
-    has_marker = False
+    has_marker = set()
     start = time.time()
     partial = index_path + ".partial"
     try:
@@ -260,8 +265,8 @@ def index(args, s, runtime):
                     if not name:
                         continue
                     rel = name[cut:]
-                    if rel == MARKER:
-                        has_marker = True
+                    if rel in owners.MARKERS:
+                        has_marker.add(rel)
                         continue
                     if rel.startswith(archive.ARCHIVE_DIR + "/"):
                         if archive.sidecar_name(rel):
@@ -278,8 +283,9 @@ def index(args, s, runtime):
                 AzureSide(s, "inbound"), sidecars, os.path.dirname(index_path), args.transfer_timeout
             ):
                 fh.write(json.dumps(entry) + "\n")
-            line = index_line(AzureSide(s, "inbound"), args.timeout) if has_marker else None
-            if line:
+            for line in owners.index_lines(
+                AzureSide(s, "inbound"), args.timeout, owners.OWNERS in has_marker, owners.LEGACY in has_marker
+            ):
                 fh.write(json.dumps(line) + "\n")
         os.replace(partial, index_path)
     finally:

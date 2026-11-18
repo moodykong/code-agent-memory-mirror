@@ -18,7 +18,7 @@ replaces something it was not told to replace.
 | `instructions:codex` | Codex's user instruction file | `<codex home>/AGENTS.md` | `AGENTS.md` |
 | `skill:NAME` | one skill | `~/.agents/skills/NAME` and, for Claude, `<claude home>/skills/NAME` | `skills/NAME/` |
 | `memory:PROJECT` | one project's Claude memory folder | `<claude home>/projects/<slug>/memory` for each checkout of the project | `memory/<memory_project>/` |
-| `box:PROJECT` | one project's bulk-file box | the configured `box.include` roots and `box.archives` folders in the checkout | the committed `projects/PROJECT/box_index.jsonl` |
+| `box:PROJECT` | one project's bulk-file box | its folder units in the checkout: the `box.include` folders and the folders that match `box.archives` | the committed `projects/PROJECT/box_index.jsonl`, with the folder owners |
 | `skills-folder`, `skills-folder:claude` | a whole skills folder that is one link | the folder | `skills/` |
 
 Projects considered: the ones in the machine config (`projects` in the user config file), the ones given
@@ -33,7 +33,7 @@ Box units exist only for projects whose `box.backend` is set.
 | has content | no record | `first-setup` | adopt: copy into the store, then link (box: `writer`) |
 | empty | has content | `join` | link (box: `reader`); no question |
 | has content | has content, different | `reconcile` | none: needs a choice |
-| has content | has content, identical | `identical` | link, silently (box: `writer` when the box names this machine or no writer, else `reader`) |
+| has content | has content, identical | `identical` | link, silently (box: `writer` when this machine owns or would claim a folder, else `reader`) |
 | empty | no record | `nothing` | nothing (memory: link the empty folder so the first memory lands in the store) |
 | a link into the store | any | `linked` | nothing; drift (a broken link, or a link to another place in the store) is reported |
 
@@ -55,9 +55,12 @@ How the sides are compared:
 - An instruction file that is empty or only whitespace is "empty". The store's `AGENTS.md` counts as
   "no record" while it is still the template that `init-store` wrote, so a machine with its own
   instruction file shows `first-setup`, not `reconcile`.
-- A box's machine side "has content" when an include root or an archived folder holds files (a size walk
-  with a time budget; a walk that stopped early is marked `lower_bound`). Its store side comes from the
-  committed index. `identical` means the same file count and bytes as the index.
+- A box's machine side "has content" when any of its folder units holds files here (a walk with a time
+  budget; a walk that stopped early is marked `lower_bound`). Its store side comes from the committed
+  index. A box is compared folder by folder against the owners the index records (see "Folder owners"
+  below): it is `reconcile` when at least one folder owned by another machine is here with different
+  content (a conflict), otherwise `identical` when both sides have content, and `first-setup`, `join` or
+  `nothing` as for the other kinds.
 - Never skills: folders named `synced` (vendor-synced), names starting with a dot (trash and hidden
   folders), `__pycache__`, and plain files. `plan` lists them under `ignored`.
 - When a skill has different copies in two places on this machine, `adopt` takes the newest copy; every
@@ -70,7 +73,7 @@ How the sides are compared:
 | skill | `adopt` (copy the machine's skill into the store, then replace the machine copies with links, backup first), `keep-local` (leave it; recorded), `link` (link the store's skill here), `skip` (do not link this store skill on this machine; recorded), `take-store` (back up the machine copies, link the store's), `keep-machine` (for `reconcile` and `identical`: leave the machine copy unlinked; recorded), `none` |
 | instructions | `adopt` (the machine's file becomes the store's `AGENTS.md`; the old one is kept in the backup folder), `link`, `take-store`, `keep-local` (recorded), `none` |
 | memory | `adopt` (copy every file into the store, then link), `link` (the store wins; the machine folder goes to the backup folder), `merge` (copy files missing from the store; a file that differs on both sides keeps the store's version and saves the machine's next to it as `<stem>.from-<machine name>.md`, not indexed; `MEMORY.md` files are union-merged; then link), `skip` (recorded), `none` |
-| box | `writer`, `reader`, `none`: records this machine's role for the project only; apply never uploads or downloads anything |
+| box | `writer` (may push the folders it owns or claims), `reader`, `none`: records this machine's role for the project only; apply never uploads or downloads anything. Several machines may be writers of one box |
 | skills-folder | `convert` |
 
 Allowed actions per case are in each unit's `choices`:
@@ -193,7 +196,10 @@ One unit:
   (`absent`, `empty`, `content`, `linked`, `drift`, `external`), and `target` and `drift` (`broken` or
   `elsewhere`) for links.
 - `store.state`: `content`, `none`, or `template` (instructions only). A box unit's store side also has
-  `writer` (from the index), and its machine side `folders` and `lower_bound`.
+  `owners` (the folders map from the index, or `null`) and `writer` (an old single-writer marker), its
+  machine side `folders` (the folder units here) and `lower_bound`, and the unit has `box_folders`:
+  `owned_here`, `conflicts`, `same`, `fetched` (here only as copies fetched from the box),
+  `not_compared`, `elsewhere` (owned elsewhere, not here) and `unclaimed` (here, owned by no machine yet).
 - `default_action`: the action for this case, or `null` (a choice is needed, or for a box unit in the
   `nothing` case, nothing happens unless you choose).
 - `decision` and `decided_by` (`default`, `recorded` or `null`): what apply does without a choices file.
@@ -225,18 +231,91 @@ A choices file:
 
 On a cloud runtime, `session-start` does the same for the runtime's agent.
 
-## One writer per box
+## Folder owners
 
-`box push` keeps one writer per box with a marker at `<inbound>/_writer.json` (machine id, machine
-name, date, tool version):
+A box can have several writer machines. Each folder unit of the box has one owning machine, recorded on
+the inbound side in `_owners.json`:
 
-- The first push for a project writes the marker. A push from a machine with another id is refused, and
-  the message names the current writer; `box push --take-over` rewrites the marker.
+```json
+{
+  "schema": 1,
+  "folders": {
+    "ws-run-12": {"machine_id": "3f2a9c1e5b7d4e6f8a0b1c2d3e4f5a6b", "machine_name": "desk-a",
+                  "since": "2026-11-17T10:00:00Z", "fingerprint": "9c1e...", "updated": "2026-11-17T12:30:00Z"},
+    "decompile/project-cli": {"machine_id": "7d4e...", "machine_name": "desk-b", "since": "2026-11-17T11:00:00Z",
+                              "fingerprint": "2b7a...", "updated": "2026-11-17T11:00:00Z"}
+  }
+}
+```
+
+- A folder unit is an archived folder (every folder that matches a `box.archives` entry, named by its
+  path in the project, for example `decompile/project-cli`) or an include folder (the folder part of an
+  include pattern, `results` for `results/**`). On rclone, include patterns that do not start with a
+  folder (`*.pdf`) form the unit `.`. See project-config.md.
+- `box push` (developer machines only, both backends) looks at every folder unit that has files here:
+  - nobody owns it: this machine claims it; the claim is written after the upload succeeded;
+  - this machine owns it: it is uploaded when it changed (an archive is skipped when its fingerprint
+    matches; an include folder is synced and the tool skips unchanged files);
+  - another machine owns it: it is skipped, which is not an error, with a note such as
+    `owned by desk-a since 2026-11-17T10:00:00Z; local copy different`.
+- `--only FOLDER` (repeatable) limits a push to those folders. `--take-over FOLDER` (repeatable) moves a
+  folder to this machine and uploads this machine's copy. `--dry-run` reads `_owners.json` and prints
+  what would be claimed, uploaded and skipped, and why.
+- `box release FOLDER` (the owning machine, a developer machine) removes the folder's entry, so the next
+  push from another machine that has it claims it. No data is deleted.
+- `box owners [--json]` lists every folder, its owner and since when, whether it is here, and the local
+  copy against the owner's fingerprint: `same`, `different`, `absent`, `fetched` (every file here came
+  from the box and is unchanged since), `unknown` (no fingerprint recorded) or `unowned` (the next push
+  from here claims it). It is read-only and falls back to the committed index when the transfer program
+  is missing.
+- The fingerprint is the one archives use: sha256 over every carried file's relative path, size and
+  modification time (whole seconds). Two copies are `same` only when all three match, so a copy that kept
+  its modification times (robocopy, rclone and `cp -p` keep them) reads as the same, and identical bytes
+  with other times read as `different`, never the other way round. A folder here whose every file was
+  fetched from the box and is unchanged since (`.agent-mirror/fetched.json`) is `fetched`, never a
+  conflict, even when only part of it was fetched.
 - A machine whose recorded role for the project is `reader` or `none` is refused before any transfer.
-- This works on both backends (azure-blob and rclone) and in `--dry-run`, which reads the marker and says
-  what it would do.
-- `box index` copies the marker into the index as one line `{"path": "_writer.json", "writer": {...}}`,
-  so `plan` names the writer offline. Readers of the index skip that line.
+- The remote has no locking. Every change to `_owners.json` reads it again right before writing, changes
+  only this machine's entries, writes, then reads it back and checks them. On a mismatch it tries again
+  (3 times) and then fails with a clear message. A claim is never written over a folder another machine
+  claimed in the meantime: that folder is reported (both machines may have uploaded it; the box then holds
+  whichever upload finished last) and the push exits with 1.
+- `box index` records the owners as one line `{"path": "_owners.json", "schema": 1, "owners": {...}}`, so
+  `plan`, `box ls` and `box owners` work offline. Readers of the index skip that line.
+- Older versions kept one writer per box in `_writer.json`. While only that marker exists, its machine
+  owns every folder currently in the box (archived folders from their sidecars, include folders from the
+  files under them), and other machines claim only folders that are not in the box. The first
+  `_owners.json` written for such a box (on the old writer's next push, or when another machine claims a
+  folder) also carries the old writer's folders, so they do not look unowned. `_writer.json` is never
+  deleted. A bare `--take-over` keeps its old meaning only while the box has no `_owners.json`: this
+  machine takes over every folder and the marker is rewritten for older versions; after that it needs
+  folder names. Update agent-mirror on every machine that pushes to a box: versions before 0.4.0 read
+  only `_writer.json`.
+
+### Worked example: two machines, one box
+
+One project lives on two machines. `desk-a` has workspaces `ws-run-01` to `ws-run-12` and a snapshot
+`decompile/binaries-1.0.0`; `desk-b` has `ws-run-20` to `ws-run-31`. Both have `decompile/project`,
+`decompile/project-cli` and `decompile/project-ui`; the first two are copies of each other (copied with
+their modification times), the third differs. The config:
+
+```json
+"archives": ["ws-*", "decompile/project*", "decompile/binaries-*"]
+```
+
+1. On `desk-a`: `agent-mirror box push`. Every folder is unowned, so `desk-a` claims and uploads all
+   sixteen. `box index`, then commit the index in the store.
+2. On `desk-b`: `agent-mirror plan` shows `box:my-project` as `reconcile` with one conflict,
+   `decompile/project-ui (owner desk-a)`; the two identical project folders are "owned elsewhere, the same
+   here", and `ws-run-20` to `ws-run-31` are "not in the box or owned by no machine yet". Choose the role
+   `writer` for `box:my-project`.
+3. On `desk-b`: `agent-mirror box push`. It claims and uploads its twelve workspaces and skips the three
+   `decompile/project*` folders (`local copy same`, `same`, `different`).
+4. To keep `desk-b`'s version of `decompile/project-ui` instead: on `desk-b`,
+   `agent-mirror box push --take-over decompile/project-ui`. Or the other way round: `desk-a` runs
+   `agent-mirror box release decompile/project-ui` and the next push from `desk-b` claims it.
+5. `agent-mirror box owners` on either machine shows who owns what, and `box ls` names the owner next to
+   each folder.
 
 `agent-mirror box candidates --project NAME --project-path PATH [--json] [--min-bytes N]` helps decide
 what goes in a box. It is read-only. It lists the entries git does not track or ignores (from

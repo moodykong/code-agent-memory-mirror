@@ -14,18 +14,22 @@ import os
 import shutil
 import time
 
-from agent_mirror.box import archive
+from agent_mirror.box import archive, owners
 from agent_mirror.box.common import run_transfer
 from agent_mirror.box.local import FetchRecord, disk_guard
 from agent_mirror.box.sides import RcloneSide
-from agent_mirror.box.writer import MARKER, index_line
 from agent_mirror.box.rules import folder_files
+from agent_mirror.box.units import TOP
 from agent_mirror.runtime import CLOUD_RUNTIMES
 from agent_mirror.platforms import current
 from agent_mirror.util import err, local_path, norm, out, short, show_cmd, utc_stamp, warn, within
 
 RCLONE_MISSING = "rclone is not installed or not on PATH; the rclone box needs it (https://rclone.org/install/)"
 ENV_FILE_FILTERS = ["- .env", "- *.env"]
+
+
+def ready(dry_run):
+    return rclone_ready(dry_run)
 
 
 def rclone_ready(dry_run):
@@ -74,12 +78,28 @@ def local_folders(s):
     return found
 
 
-def filter_args(s):
-    """--filter flags: env files, managed and archived folders and exclude rules out, include rules in, the rest out."""
+def filter_args(s, folders=None, selected=None):
+    """--filter flags: env files, managed and archived folders and exclude rules out, include rules in, the rest out.
+
+    folders are the include folder units and selected the names of those this push carries; only
+    their include patterns go in. Files of the "." unit are only those outside every other unit's folder.
+    """
     rules = list(ENV_FILE_FILTERS)
     rules += ["- " + p for p in local_folders(s)]
     rules += ["- " + rclone_pattern(p) for p in s["exclude"]]
-    rules += ["+ " + rclone_pattern(p) for p in s["include"]]
+    if folders is None:
+        rules += ["+ " + rclone_pattern(p) for p in s["include"]]
+    else:
+        owner_of = {}
+        for u in folders:
+            for p in u["patterns"]:
+                owner_of[p] = u["name"]
+        rules += [
+            "+ " + rclone_pattern(p) for p in s["include"] if owner_of.get(p) in selected and owner_of.get(p) != TOP
+        ]
+        if TOP in selected:
+            rules += ["- /%s/**" % u["name"] for u in folders if u["name"] != TOP]
+            rules += ["+ " + rclone_pattern(p) for p in s["include"] if owner_of.get(p) == TOP]
     rules.append("- **")
     args = []
     for r in rules:
@@ -96,38 +116,26 @@ def failed(what, rc, stdout, stderr):
 # push ----------------------------------------------------------------------------------
 
 
-def push(args, s, runtime):
-    if runtime in CLOUD_RUNTIMES:
-        err("refusing box push on %s: only the developer machine writes the inbound side" % runtime)
-        return 2
-    if not os.path.isdir(s["project_path"]):
-        err("project folder %s does not exist" % s["project_path"])
-        return 1
-    if not s["include"] and not s.get("archives"):
-        out("box.include and box.archives are empty; nothing to push")
-        return 0
-    if args.dry_run:
-        out("dry run: nothing will change")
-    if not rclone_ready(args.dry_run):
-        return 1
-    if not s["include"]:
-        return 1 if archive.push_archives(args, s, RcloneSide(s, "inbound")) else 0
+def push_folders(args, s, layout, folder_units):
+    """One rclone copy (sync with --delete) carrying only these units' include patterns.
+
+    Returns (names that succeeded, failures): all of them or none, since it is one transfer. Files of
+    folders this push does not carry are filtered out, so `rclone sync` never deletes them either.
+    """
+    names = [u["name"] for u in folder_units]
     verb = "sync" if args.delete else "copy"
-    if args.delete:
-        warn("--delete: files under %s that are gone locally will be deleted (rclone sync)" % s["inbound"])
-    cmd = ["rclone", verb, s["project_path"], s["inbound"]] + filter_args(s)
+    cmd = ["rclone", verb, s["project_path"], s["inbound"]] + filter_args(s, layout.folders, set(names))
     out("%s: %s" % ("would run" if args.dry_run else "running", show_cmd(cmd)))
     if args.dry_run:
-        archive.push_archives(args, s, RcloneSide(s, "inbound"))
-        return 0
+        return names, 0
     start = time.time()
     rc, _, stderr = run_transfer(cmd, args.transfer_timeout, capture=False)
     took = time.time() - start
     if rc != 0:
         err("rclone %s failed after %.1f s (%s)" % (verb, took, stderr or "rc %s" % rc))
-        return 1
-    out("pushed the include folders to %s in %.1f s" % (s["inbound"], took))
-    return 1 if archive.push_archives(args, s, RcloneSide(s, "inbound")) else 0
+        return [], 1
+    out("pushed %s to %s in %.1f s" % (", ".join(names), s["inbound"], took))
+    return names, 0
 
 
 # index ------------------------------------------------------------------------------------
@@ -159,7 +167,7 @@ def index(args, s, runtime):
         return 1
     kept = left_out = 0
     sidecars = []
-    has_marker = False
+    has_marker = set()
     partial = index_path + ".partial"
     try:
         with open(partial, "w", encoding="utf-8") as fh:
@@ -167,8 +175,8 @@ def index(args, s, runtime):
                 rel = str(it.get("Path") or "")
                 if not rel or it.get("IsDir"):
                     continue
-                if rel == MARKER:
-                    has_marker = True
+                if rel in owners.MARKERS:
+                    has_marker.add(rel)
                     continue
                 if rel.startswith(archive.ARCHIVE_DIR + "/"):
                     if archive.sidecar_name(rel):
@@ -183,8 +191,9 @@ def index(args, s, runtime):
                 RcloneSide(s, "inbound"), sidecars, os.path.dirname(index_path), args.transfer_timeout
             ):
                 fh.write(json.dumps(entry) + "\n")
-            line = index_line(RcloneSide(s, "inbound"), args.timeout) if has_marker else None
-            if line:
+            for line in owners.index_lines(
+                RcloneSide(s, "inbound"), args.timeout, owners.OWNERS in has_marker, owners.LEGACY in has_marker
+            ):
                 fh.write(json.dumps(line) + "\n")
         os.replace(partial, index_path)
     finally:

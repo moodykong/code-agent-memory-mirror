@@ -8,6 +8,7 @@ import shlex
 from agent_mirror.box.archive import read_local_toc
 from agent_mirror.box.local import FetchRecord, free_bytes, human, min_free
 from agent_mirror.box.rules import clean_rel
+from agent_mirror.box.units import archive_unit_of
 from agent_mirror.config import resolve_project
 from agent_mirror.runtime import CLOUD_RUNTIMES, detect_runtime
 from agent_mirror.util import err, out, warn, within
@@ -26,8 +27,8 @@ def load_index(index_path):
                 r = json.loads(line)
             except ValueError:
                 continue
-            if not isinstance(r, dict) or not r.get("path") or "writer" in r:
-                continue  # the writer marker line, or anything that is not an entry
+            if not isinstance(r, dict) or not r.get("path") or "writer" in r or "owners" in r:
+                continue  # an ownership line, or anything that is not an entry
             (archives if r.get("archive") else files).append(r)
     return files, archives
 
@@ -39,6 +40,27 @@ def presence(project, path, size):
     except OSError:
         return "-"
     return "here" if size is None or st.st_size == size else "differs"
+
+
+def index_owners(index_path):
+    """({folder: owner name} from the index's ownership line, the old single writer's name or None)."""
+    from agent_mirror.box.owners import from_index
+
+    folders, legacy = from_index(index_path)
+    names = dict((f, e.get("machine_name") or str(e.get("machine_id"))[:12]) for f, e in (folders or {}).items())
+    writer = (legacy.get("machine_name") or str(legacy.get("machine_id"))[:12]) if (legacy and folders is None) else None
+    return names, writer
+
+
+def owner_note(path, owners, writer):
+    if writer:
+        return "  owner: %s" % writer
+    found = sorted(
+        set(n for f, n in owners.items() if f == path or path.startswith(f + "/") or f.startswith(path + "/"))
+    )
+    if not found:
+        return ""
+    return "  %s: %s" % ("owner" if len(found) == 1 else "owners", ", ".join(found))
 
 
 def cmd_ls(args, s):
@@ -59,15 +81,22 @@ def cmd_ls(args, s):
             return 2
     files, archives = load_index(index_path)
     arch = dict((a["path"], a) for a in archives)
-    top = rel.split("/")[0] if rel else ""
+    owners, writer = index_owners(index_path)
     when = datetime.datetime.fromtimestamp(os.path.getmtime(index_path)).strftime("%Y-%m-%d %H:%M")
     out("box index %s (written %s): %d files, %d archived folders" % (index_path, when, len(files), len(archives)))
-    if top in arch:
-        toc = read_local_toc(index_dir, arch[top])
+    unit = None
+    if rel:
+        found = archive_unit_of(rel, s.get("archives") or [])
+        if found in arch:
+            unit = found
+        else:  # an archive the index still lists although the entries changed since
+            unit = next((a for a in sorted(arch, key=len, reverse=True) if rel == a or rel.startswith(a + "/")), None)
+    if unit:
+        toc = read_local_toc(index_dir, arch[unit])
         if toc is None:
-            err("the index has no table of contents for the archived folder %s; run `agent-mirror box index`" % top)
+            err("the index has no table of contents for the archived folder %s; run `agent-mirror box index`" % unit)
             return 1
-        items = [(top + "/" + e["path"], e.get("size") or 0, e.get("in", "bundle")) for e in toc]
+        items = [(unit + "/" + e["path"], e.get("size") or 0, e.get("in", "bundle")) for e in toc]
     else:
         items = [(f["path"], f.get("size") or 0, "file") for f in files]
     check = len(items) <= PRESENCE_LIMIT
@@ -79,33 +108,39 @@ def cmd_ls(args, s):
         out("  %-9s %10s  %s%s" % (presence(project, path, size), human(size), path, note))
         return 0
     rows = {}
+
+    def row(head):
+        return rows.setdefault(
+            head, {"dir": False, "files": 0, "bytes": 0, "here": 0, "large": 0, "kind": "file", "archives": 0}
+        )
+
     for path, size, kind in items:
         if not path.startswith(prefix):
             continue
         head, _, tail = path[len(prefix) :].partition("/")
-        r = rows.setdefault(
-            head, {"dir": False, "files": 0, "bytes": 0, "here": 0, "large": 0, "kind": kind, "path": path}
-        )
+        r = row(head)
+        r["kind"] = kind if r["files"] == 0 else r["kind"]
         r["dir"] = r["dir"] or bool(tail)
         r["files"] += 1
         r["bytes"] += size
         r["large"] += kind == "large"
         if check and presence(project, path, size) == "here":
             r["here"] += 1
-    if not rel:
-        for name, a in arch.items():
-            r = rows.setdefault(name, {"dir": True, "files": 0, "bytes": 0, "here": 0, "large": 0, "kind": "archive"})
-            r.update(
-                {
-                    "dir": True,
-                    "files": a.get("files") or 0,
-                    "bytes": a.get("bytes") or 0,
-                    "kind": "archive",
-                    "large": a.get("large_files") or 0,
-                }
-            )
+    if unit is None:
+        for name, a in sorted(arch.items()):
+            if not name.startswith(prefix):
+                continue
+            head, _, tail = name[len(prefix) :].partition("/")
+            r = row(head)
+            r["dir"] = True
+            r["files"] += a.get("files") or 0
+            r["bytes"] += a.get("bytes") or 0
+            r["large"] += a.get("large_files") or 0
+            r["archives"] += 1
+            if not tail:
+                r["kind"] = "archive"
             toc = read_local_toc(index_dir, a) if check else None
-            r["here"] = sum(1 for e in toc or [] if presence(project, name + "/" + e["path"], e.get("size")) == "here")
+            r["here"] += sum(1 for e in toc or [] if presence(project, name + "/" + e["path"], e.get("size")) == "here")
     if not rows:
         err("nothing at %s in the box index" % (rel or "the top"))
         return 1
@@ -114,9 +149,15 @@ def cmd_ls(args, s):
         shown = prefix + name
         if r["dir"]:
             status = "%d/%d" % (r["here"], r["files"]) if check else "?"
-            note = "  archived folder: %d files" % r["files"] if r["kind"] == "archive" else "  %d files" % r["files"]
+            if r["kind"] == "archive":
+                note = "  archived folder: %d files" % r["files"]
+            elif r["archives"]:
+                note = "  %d files, %d archived folder(s) inside" % (r["files"], r["archives"])
+            else:
+                note = "  %d files" % r["files"]
             if r["large"]:
                 note += ", %d large (fetched only when named or with --all)" % r["large"]
+            note += owner_note(shown, owners, writer)
             out("  %-9s %10s  %s/%s" % (status, human(r["bytes"]), shown, note))
         else:
             note = ""

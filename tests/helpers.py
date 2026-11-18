@@ -285,10 +285,35 @@ def make_home(base, project_path):
 # and acts out the few storage commands agent-mirror uses, against the blob
 # list in FAKE_AZ_BLOBS.
 FAKE_AZ = r"""
-import fnmatch, json, os, sys
+import fnmatch, json, os, shutil, sys
 
 argv = sys.argv[1:]
 entry = {"argv": argv}
+
+
+def run_hooks(dest):
+    # FAKE_HOOKS (a JSON list) plays another machine: after an upload whose stored path ends with
+    # rule["after_put"], copy rule["copy_from"] to rule["copy_to"], at most rule["times"] times (default 1).
+    spec = os.environ.get("FAKE_HOOKS")
+    if not spec:
+        return
+    with open(spec) as fh:
+        rules = json.load(fh)
+    target = dest.replace(os.sep, "/")
+    for i, r in enumerate(rules):
+        if not target.endswith(r["after_put"]):
+            continue
+        counter = "%s.%d.count" % (spec, i)
+        n = 0
+        if os.path.exists(counter):
+            with open(counter) as fh:
+                n = int(fh.read() or 0)
+        if n >= r.get("times", 1):
+            continue
+        with open(counter, "w") as fh:
+            fh.write(str(n + 1))
+        os.makedirs(os.path.dirname(r["copy_to"]), exist_ok=True)
+        shutil.copyfile(r["copy_from"], r["copy_to"])
 
 
 def opt(name, default=None):
@@ -382,8 +407,8 @@ if argv[:3] == ["storage", "blob", "upload"] and root:
         sys.stderr.write("ErrorCode:BlobAlreadyExists\n")
         finish(1)
     os.makedirs(os.path.dirname(dest), exist_ok=True)
-    import shutil
     shutil.copyfile(opt("--file"), dest)
+    run_hooks(dest)
     finish(0)
 if argv[:3] == ["storage", "blob", "upload-batch"]:
     src = opt("--source")
@@ -403,6 +428,31 @@ import json, os, re, shutil, sys
 
 argv = sys.argv[1:]
 entry = {"argv": argv}
+
+
+def run_hooks(dest):
+    # FAKE_HOOKS (a JSON list) plays another machine: after an upload whose stored path ends with
+    # rule["after_put"], copy rule["copy_from"] to rule["copy_to"], at most rule["times"] times (default 1).
+    spec = os.environ.get("FAKE_HOOKS")
+    if not spec:
+        return
+    with open(spec) as fh:
+        rules = json.load(fh)
+    target = dest.replace(os.sep, "/")
+    for i, r in enumerate(rules):
+        if not target.endswith(r["after_put"]):
+            continue
+        counter = "%s.%d.count" % (spec, i)
+        n = 0
+        if os.path.exists(counter):
+            with open(counter) as fh:
+                n = int(fh.read() or 0)
+        if n >= r.get("times", 1):
+            continue
+        with open(counter, "w") as fh:
+            fh.write(str(n + 1))
+        os.makedirs(os.path.dirname(r["copy_to"]), exist_ok=True)
+        shutil.copyfile(r["copy_from"], r["copy_to"])
 
 
 def finish(code=0, stdout=None, stderr=None):
@@ -477,6 +527,7 @@ if argv[:1] == ["copyto"] and not is_remote(argv[1]) and stored(argv[2]):
     if not ("--ignore-existing" in argv and os.path.exists(dest)):
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         shutil.copyfile(argv[1], dest)
+        run_hooks(dest)
 if argv[:1] == ["copyto"] and inbound and argv[1].startswith(inbound):
     dest = argv[2]
     src = stored(argv[1])

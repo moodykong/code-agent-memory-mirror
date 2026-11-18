@@ -252,6 +252,76 @@ class PlanCasesTest(ReconcileBase):
         self.assertEqual((u["decision"], u["decided_by"]), ("reader", "recorded"))
 
 
+def snapshot(root, skip=()):
+    """{relative path: (type, size, mtime_ns, link target)} for everything under root, links not followed."""
+    found = {}
+    for folder, dirs, files in os.walk(root):
+        rel_dir = os.path.relpath(folder, root)
+        if rel_dir == ".":
+            dirs[:] = [d for d in dirs if d not in skip]
+        for name in dirs + files:
+            path = os.path.join(folder, name)
+            st = os.lstat(path)
+            if os.path.islink(path):
+                kind, target = "link", os.readlink(path)
+            elif os.path.isdir(path):
+                kind, target = "dir", None
+            else:
+                kind, target = "file", None
+            found[os.path.relpath(path, root)] = (kind, st.st_size if kind == "file" else None, st.st_mtime_ns, target)
+    st = os.lstat(root)
+    found["."] = ("dir", None, st.st_mtime_ns, None)
+    return found
+
+
+class DryRunReadOnlyTest(ToolTest):
+    """plan and apply --dry-run change nothing on a lived-in machine: every path, size, time and link
+    target in the home, the store and the project is the same afterwards, and no machine id appears."""
+
+    def test_apply_dry_run_changes_nothing(self):
+        # lived in: its own instructions, skills, memory, a recorded project, box content, no machine id
+        write(self.h(".claude", "skills", "mine", "SKILL.md"), "---\nname: mine\ndescription: x\n---\nmine\n")
+        write(self.p("temporary", "a.txt"), "abc")
+        write(self.p("ws-1", "f.txt"), "w")
+        self.set_box(archives=["ws-*"])
+        cfg = self.h(".config", "agent-mirror", "config.json")
+        write(cfg, json.dumps({"store": self.store, "agents": ["claude", "codex"], "projects": {"demo": [self.project]}}))
+        choices = os.path.join(self.base, "choices", "c.json")
+        write(
+            choices,
+            json.dumps(
+                {
+                    "skill:alpha": "adopt",
+                    "skill:beta": "link",
+                    "skill:mine": "adopt",
+                    "instructions:claude": "adopt",
+                    "instructions:codex": "link",
+                    "memory:demo": "merge",
+                    "box:demo": "writer",
+                }
+            ),
+        )
+        roots = {"home": (self.home, ()), "store": (self.store, ()), "work": (os.path.join(self.base, "work"), ())}
+        before = dict((k, snapshot(r, skip)) for k, (r, skip) in roots.items())
+        args = ["--project", "demo", "--project-path", self.project]
+        rc, out = self.run_tool("plan", "--json", *args)
+        self.assertEqual(rc, 0, out)
+        self.assertIsNone(json.loads(out)["machine"]["id"])
+        rc, out = self.run_tool("apply", "--dry-run", "--choices", choices, *args)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("dry run: nothing will change", out)
+        self.assertIn("would", out)
+        rc, out = self.run_tool("apply", "--dry-run", "--yes-defaults", *args)
+        self.assertEqual(rc, 0, out)
+        after = dict((k, snapshot(r, skip)) for k, (r, skip) in roots.items())
+        for k in roots:
+            changed = sorted(
+                p for p in set(before[k]) | set(after[k]) if before[k].get(p) != after[k].get(p)
+            )
+            self.assertEqual(changed, [], "%s changed under %s" % (changed, k))
+        self.assertNotIn("machine", json.loads(read(cfg)))
+
+
 class ApplyTest(ReconcileBase):
     def test_reconcile_units_wait_without_a_choice(self):
         rc, out = self.apply()

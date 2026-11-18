@@ -172,11 +172,15 @@ at the same time do not conflict.
 
 `box_index.jsonl` has one JSON object per line. A plain file: `{"path", "size", "modtime"}`. An archived
 folder: `{"path": "<folder>", "archive": true, "files", "bytes", "archive_bytes", "large_files",
-"large_bytes", "modtime", "toc": "box_toc/<folder>.json"}`; the table of contents file lists every file
-of the folder with its size and whether it is in the bundle or travels on its own. When the box has a
-writer marker, one more line records it: `{"path": "_writer.json", "writer": {"machine_id",
-"machine_name", "date", "tool"}}` (readers skip it; `plan` uses it to name the writer). Commit the index
-and `box_toc/` so `agent-mirror box ls` and `agent-mirror plan` work offline on other machines.
+"large_bytes", "modtime", "fingerprint", "toc": "box_toc/<folder>.json"}` (a nested folder such as
+`decompile/project-cli` has its table of contents at `box_toc/decompile/project-cli.json`); the table of
+contents file lists every file of the folder with its size and whether it is in the bundle or travels on
+its own. The folder owners are one more line: `{"path": "_owners.json", "schema": 1, "owners":
+{"<folder>": {"machine_id", "machine_name", "since", "fingerprint", "updated"}}}`. A box written by an
+older version may also have its single-writer marker: `{"path": "_writer.json", "writer": {"machine_id",
+"machine_name", "date", "tool"}}`. Readers of the entries skip both lines; `plan`, `box ls` and
+`box owners` use them. Commit the index and `box_toc/` so `agent-mirror box ls` and `agent-mirror plan`
+work offline on other machines.
 
 ## In the project folder (never committed)
 

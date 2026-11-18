@@ -116,7 +116,9 @@ on the vendor's settings page.
 | `hook memory-write` | hook handler: runs `sync` when the file just written is a store memory, skill or instruction file |
 | `hooks install\|uninstall\|status [--agent claude]` | add or remove the three Claude Code hooks in its user settings, keeping everything else |
 | `timer install\|uninstall\|status [--minutes 30]` | periodic `sync`: systemd user timer, launchd agent or Windows scheduled task |
-| `box push [--take-over]\|index`, `box fetch PATH [--all]`, `box send PATH [--archive]` | move bulk untracked files through Azure blob storage or any rclone remote, on demand; one machine writes each box |
+| `box push [--only FOLDER]... [--take-over [FOLDER]]... [--delete]` | upload the box folders this machine owns or claims; folders another machine owns are skipped with a note (same or different here) |
+| `box owners [--json]`, `box release FOLDER...` | list every folder of the box with its owning machine and how the local copy compares (read-only); give up folders this machine owns (no data deleted) |
+| `box index`, `box fetch PATH [--all]`, `box send PATH [--archive]` | list the box into the store, fetch on demand, send results; Azure blob storage or any rclone remote |
 | `box candidates [--json] [--min-bytes N]` | list the project's untracked and ignored entries with sizes and a kind guess, to choose what goes in the box; read-only |
 | `box ls [PATH]`, `box status`, `box evict PATH` | browse the box offline, see what was fetched here, delete fetched copies to free disk |
 | `box receive [--into DIR]` | download the agents' results from the outbound side (developer machine) |
@@ -153,17 +155,20 @@ network step warns and carries on. `agent-mirror <command> -h` shows every optio
 ## The box
 
 Untracked project files (results, slides, figures) do not travel with a git clone. The box carries
-them. **Inbound**: the developer machine uploads (`box push`), agents read (`box index`, `box ls`,
-`box fetch`). **Outbound**: agents upload results (`box send`), the developer pulls them (`box receive`).
+them. **Inbound**: developer machines upload (`box push`), each the folders it owns, and agents read
+(`box index`, `box ls`, `box fetch`). **Outbound**: agents upload results (`box send`), the developer pulls them (`box receive`).
 Backends: `azure-blob` (through the Azure CLI, Azure AD sign-in only) and `rclone` (OneDrive, S3,
 Google Drive and many more).
 
 Retrieval is on demand, because a cloud machine has little disk: agents browse the box offline with
 `box ls`, fetch only what the task needs, and every fetch refuses to leave less than
 `box.min_free_bytes` (default 2 GiB) free. `box status` and `box evict` manage what was fetched.
-Folders with very many small files can travel as one bundle each (`box.archives`), with large files
-kept out of the bundle and fetched only when named. Settings and rules:
-[plugin/docs/project-config.md](plugin/docs/project-config.md).
+Folders with very many small files can travel as one bundle each (`box.archives`, for example `ws-*` or
+`decompile/project*`), with large files kept out of the bundle and fetched only when named. Each archived
+folder and each include folder is owned by one machine (`<inbound>/_owners.json`), so a project split
+across two machines can share one box: each machine pushes its own folders and `box owners` shows who has
+what. Settings and rules: [plugin/docs/project-config.md](plugin/docs/project-config.md) and "Folder
+owners" in [plugin/docs/reconciliation.md](plugin/docs/reconciliation.md).
 
 ## Safety rules
 
@@ -181,8 +186,10 @@ kept out of the bundle and fetched only when named. Settings and rules:
   skills folder is never replaced by one link; skills are linked one by one.
 - Before machine content is copied into the store (`adopt`, memory `merge`), the secret scan runs on it;
   a hit refuses that unit and names the file and pattern only. Cloud sessions never adopt.
-- One machine writes each box: the first `box push` writes `_writer.json` on the inbound side, and other
-  machines are refused until one runs `box push --take-over`.
+- Each folder of a box has one owning machine (`_owners.json` on the inbound side): `box push` claims
+  folders nobody owns and never uploads a folder another machine owns, unless you run
+  `box push --take-over FOLDER`. A machine whose box role is `reader` or `none` never pushes. The remote has
+  no locking, so every change to `_owners.json` is read back and checked, and retried or refused clearly.
 - Never force push to the main branch. A rebase conflict is aborted and the local commit is kept.
 - Cloud sessions push to an inbox branch, never to the main branch (`"cloud_push": "inbox"` in store.json,
   the default). A developer machine's `sync` applies memory from those branches automatically and holds

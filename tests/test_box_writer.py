@@ -1,4 +1,4 @@
-"""One writer per box (the _writer.json marker) on both backends, and `box candidates`."""
+"""Folder owners on both backends for one include folder, the old single-writer marker, and `box candidates`."""
 
 import json
 import os
@@ -10,7 +10,7 @@ from helpers import FAKE_RCLONE, ToolTest, clean_env, install_fake, read, write
 
 
 class WriterMarkerMixin:
-    """The same story on each backend: first push claims, another machine is refused, take-over, reader."""
+    """The same story on each backend: the first push claims, another machine skips, take-over, reader."""
 
     def other_machine(self):
         cfg_path = self.h(".config", "agent-mirror", "config.json")
@@ -26,54 +26,61 @@ class WriterMarkerMixin:
         )
         self.assertEqual(rc, 0, out)
 
+    def owners(self):
+        path = self.remote("_owners.json")
+        return json.loads(read(path))["folders"] if os.path.isfile(path) else None
+
     def test_writer_marker_story(self):
         write(self.p("temporary", "a.txt"), "abc")
         rc, out = self.run_tool("machine", "--name", "first-desk")
         self.assertEqual(rc, 0, out)
         rc, out = self.push("--dry-run")
         self.assertEqual(rc, 0, out)
-        self.assertIn("would write the writer marker", out)
-        self.assertIsNone(self.marker())
+        self.assertIn("would claim and upload:", out)
+        self.assertIn("would record in", out)
+        self.assertIsNone(self.owners())
         rc, out = self.push()
         self.assertEqual(rc, 0, out)
-        self.assertIn("is the writer", out)
-        first = self.marker()
+        self.assertIn("recorded in", out)
+        first = self.owners()["temporary"]
         self.assertEqual(first["machine_name"], "first-desk")
-        for key in ("machine_id", "machine_name", "date", "tool"):
+        for key in ("machine_id", "machine_name", "since", "fingerprint", "updated"):
             self.assertIn(key, first)
         rc, out = self.push()
         self.assertEqual(rc, 0, out)
-        self.assertIn("writer: this machine (first-desk)", out)
-        # the index records the marker, so plan names the writer offline
+        self.assertIn("upload when changed:", out)
+        self.assertNotIn("recorded in", out)  # nothing changed, so _owners.json is not written again
+        # the index records the owners, so plan and box ls name them offline (the fakes keep no synced
+        # files, so put the pushed file where the remote keeps it)
+        write(self.remote("temporary", "a.txt"), "abc")
         rc, out = self.index()
         self.assertEqual(rc, 0, out)
         lines = [json.loads(x) for x in read(self.s("projects", "demo", "box_index.jsonl")).splitlines()]
-        self.assertEqual([x["writer"]["machine_name"] for x in lines if "writer" in x], ["first-desk"])
-        self.assertNotIn("_writer.json", [x["path"] for x in lines if "writer" not in x])
+        self.assertEqual([x["owners"]["temporary"]["machine_name"] for x in lines if "owners" in x], ["first-desk"])
+        self.assertNotIn("_owners.json", [x["path"] for x in lines if "owners" not in x])
         rc, out = self.run_tool("box", "ls", "--project", "demo", "--project-path", self.project, env=self.tool_env())
-        self.assertNotIn("_writer.json", out)
-        # another machine is refused, before any transfer, and told who writes
+        self.assertNotIn("_owners.json", out)
+        self.assertIn("owner: first-desk", out)
+        # another machine skips the folder (not an error), before any transfer, and says who owns it
         self.other_machine()
         self.reset_log()
         rc, out = self.push()
-        self.assertEqual(rc, 2, out)
-        self.assertIn("the box's writer is first-desk", out)
-        self.assertIn("--take-over", out)
+        self.assertEqual(rc, 0, out)
+        self.assertRegex(out, r"owned by first-desk since \S+; local copy same")
         self.assertEqual(self.transfers(), [])
-        rc, out = self.push("--dry-run")
-        self.assertEqual(rc, 2, out)
         rc, out = self.run_tool("plan", "--json", "--project", "demo", "--project-path", self.project)
         unit = [u for u in json.loads(out)["units"] if u["id"] == "box:demo"][0]
-        self.assertIn("the current writer is first-desk", unit["note"])
-        # --take-over rewrites the marker
-        rc, out = self.push("--take-over")
+        self.assertEqual((unit["case"], unit["default_action"]), ("identical", "reader"))
+        self.assertIn("owned elsewhere, the same here: temporary", unit["note"])
+        # --take-over FOLDER moves it
+        rc, out = self.push("--take-over", "temporary")
         self.assertEqual(rc, 0, out)
-        self.assertIn("took over", out)
-        self.assertEqual(self.marker()["machine_name"], "second-desk")
+        self.assertIn("take-over temporary", out)
+        self.assertEqual(self.owners()["temporary"]["machine_name"], "second-desk")
         # a reader is refused before anything else, even with --take-over
         self.set_role("reader")
         self.reset_log()
-        rc, out = self.push("--take-over")
+        rc, out = self.push("--take-over", "temporary")
         self.assertEqual(rc, 2, out)
         self.assertIn("recorded role is reader", out)
         self.assertEqual(self.tool_calls(), [])
@@ -84,6 +91,28 @@ class WriterMarkerMixin:
         self.set_role("writer")
         rc, out = self.push()
         self.assertEqual(rc, 0, out)
+
+    def test_old_single_writer_marker_keeps_working(self):
+        write(self.p("temporary", "a.txt"), "abc")
+        write(self.remote("temporary", "a.txt"), "abc")  # the folder is in the box already
+        marker = {"machine_id": "a" * 32, "machine_name": "big-desk", "date": "2026-11-01T09:00:00", "tool": "x"}
+        write(self.remote("_writer.json"), json.dumps(marker))
+        rc, out = self.run_tool("machine", "--name", "first-desk")
+        rc, out = self.push()
+        self.assertEqual(rc, 0, out)
+        self.assertIn("single-writer marker", out)
+        self.assertIn("owned by big-desk since 2026-11-01T09:00:00", out)
+        self.assertIsNone(self.owners())  # nothing claimed, and this is not the old writer: nothing written
+        rc, out = self.index()
+        lines = [json.loads(x) for x in read(self.s("projects", "demo", "box_index.jsonl")).splitlines()]
+        self.assertEqual([x["writer"]["machine_name"] for x in lines if "writer" in x], ["big-desk"])
+        rc, out = self.run_tool("plan", "--json", "--project", "demo", "--project-path", self.project)
+        unit = [u for u in json.loads(out)["units"] if u["id"] == "box:demo"][0]
+        self.assertIn("the current writer is big-desk", unit["note"])
+        rc, out = self.push("--take-over")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.owners()["temporary"]["machine_name"], "first-desk")
+        self.assertEqual(json.loads(read(self.remote("_writer.json")))["machine_name"], "first-desk")
 
 
 class AzureWriterTest(WriterMarkerMixin, ToolTest):
@@ -104,9 +133,8 @@ class AzureWriterTest(WriterMarkerMixin, ToolTest):
     def index(self):
         return self.box_run("box", "index", az=self.tool_env())
 
-    def marker(self):
-        path = os.path.join(self.root, "in-box", "demo", "_writer.json")
-        return json.loads(read(path)) if os.path.isfile(path) else None
+    def remote(self, *parts):
+        return os.path.join(self.root, "in-box", "demo", *parts)
 
     def reset_log(self):
         if os.path.exists(os.path.join(self.base, "az_log.jsonl")):
@@ -156,9 +184,8 @@ class RcloneWriterTest(WriterMarkerMixin, ToolTest):
     def index(self):
         return self.box_run("box", "index", az=self.tool_env())
 
-    def marker(self):
-        path = os.path.join(self.root, "fakeremote", "box", "in", "_writer.json")
-        return json.loads(read(path)) if os.path.isfile(path) else None
+    def remote(self, *parts):
+        return os.path.join(self.root, "fakeremote", "box", "in", *parts)
 
     def reset_log(self):
         if os.path.exists(self.log):
@@ -174,7 +201,7 @@ class RcloneWriterTest(WriterMarkerMixin, ToolTest):
             c
             for c in self.tool_calls()
             if c[0] in ("copy", "sync")
-            or (c[0] == "copyto" and c[-1].endswith("_writer.json") and not c[1].startswith(self.INBOUND))
+            or (c[0] == "copyto" and not c[1].startswith(self.INBOUND))
         ]
 
 
@@ -191,6 +218,9 @@ class CandidatesTest(ToolTest):
         write(p("credentials.json"), "{}\n")
         write(p("temporary", "notes.txt"), "n\n")
         write(p("ws-1", "f.txt"), "w\n")
+        write(p("decompile", "proj-a", "db.bin"), "a\n")
+        write(p("decompile", "proj-b", "db.bin"), "b\n")
+        write(p("decompile", "notes.txt"), "n\n")
         write(p("docs", "readme.md"), "tracked\n")
         write(p("docs", "slides", "deck.pptx"), "s" * 50)
         subprocess.run(["git", "init", "-q", self.project], env=clean_env(self.home), check=True)
@@ -200,7 +230,7 @@ class CandidatesTest(ToolTest):
         git("add", "src", ".gitignore", "docs/readme.md")
         git("commit", "-q", "-m", "tracked files")
         git("worktree", "add", "-q", "--detach", "wt")  # a real worktree inside the project
-        self.set_box(archives=["ws-*"], archive_large_file_bytes=1000)
+        self.set_box(archives=["ws-*", "decompile/proj-*"], archive_large_file_bytes=1000)
 
     def candidates(self, *extra, **kw):
         return self.run_tool(
@@ -226,6 +256,7 @@ class CandidatesTest(ToolTest):
         self.assertIn(".gitignore:3:results/", rows["results/"]["ignored_by"])
         self.assertEqual(rows["temporary/"]["box"], "covered")
         self.assertEqual(rows["ws-1/"]["box"], "covered (archive)")
+        self.assertEqual(rows["decompile/"]["box"], "partly covered (archived: decompile/proj-a, decompile/proj-b)")
         self.assertEqual(rows["docs/slides/"]["box"], "covered")
         self.assertEqual(rows["results/"]["box"], "")
         self.assertNotIn("src/", rows)

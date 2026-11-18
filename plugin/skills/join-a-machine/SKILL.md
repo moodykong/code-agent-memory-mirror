@@ -59,11 +59,11 @@ Typical recommendations:
 | Memory only here | Adopt, after the secret scan | This is the first setup of that project |
 | Box, machine has the files, box empty | Writer, then choose the folders | See step 4 |
 | Box, box has files, machine has none | Reader | Fetch on demand |
-| Box, both have files | Ask which machine is the source of truth; the other is a reader | Two writers overwrite each other |
+| Box, both have files | Writer, if this machine has folders of its own to add. Run `agent-mirror box owners` and go through only the folders that exist here with different content from their owner's: for each, the owner keeps it, or this machine takes it over | Each folder has one owning machine. Folders owned elsewhere are skipped on push, so two machines can both be writers without overwriting each other |
 
 Write the choices to a small JSON file outside every repo: `{"<unit id>": "<action>"}`.
 
-### 4. Bulk files, when this machine will be the writer
+### 4. Bulk files, when this machine will be a writer
 
 ```
 agent-mirror box candidates --project <name> --project-path <path>

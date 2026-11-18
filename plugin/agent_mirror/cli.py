@@ -7,6 +7,7 @@ import sys
 
 from agent_mirror import __version__
 from agent_mirror.box.common import DEFAULT_TRANSFER_TIMEOUT
+from agent_mirror.box.owners import TAKE_ALL
 from agent_mirror.config import Context
 from agent_mirror.platforms import SANDBOX_EXIT
 from agent_mirror.runtime import AGENT_NAMES, detect_runtime
@@ -213,11 +214,48 @@ def build_parser():
     every = [common, timeout, proj, dry, transfer]
     force = argparse.ArgumentParser(add_help=False)
     force.add_argument("--force", action="store_true", help="go ahead even when the disk guard says no")
-    b = box.add_parser("push", parents=every, help="upload the include folders and archives (developer machine only)")
-    b.add_argument("--delete", action="store_true", help="also delete remote files whose local file is gone")
-    b.add_argument(
-        "--take-over", action="store_true", help="make this machine the box's writer (rewrites <inbound>/_writer.json)"
+    b = box.add_parser(
+        "push",
+        parents=every,
+        help="upload the folders this machine owns or claims (developer machine only)",
+        description="Upload this machine's folders of the box: each archived folder and each include folder "
+        "is owned by one machine (<inbound>/_owners.json). A folder nobody owns is claimed (recorded after "
+        "its upload), folders this machine owns are uploaded when changed, and folders another machine owns "
+        "are skipped with a note saying whether the local copy is the same. A machine whose recorded role "
+        "is reader or none is refused before any transfer.",
     )
+    b.add_argument(
+        "--delete", action="store_true", help="also delete remote files whose local file is gone (pushed folders only)"
+    )
+    b.add_argument(
+        "--take-over",
+        action="append",
+        nargs="?",
+        const=TAKE_ALL,
+        metavar="FOLDER",
+        help="move FOLDER to this machine and upload it (repeatable). Without FOLDER, only for a box that has no "
+        "_owners.json yet: this machine takes over every folder, as with the single writer before 0.4.0",
+    )
+    b.add_argument("--only", action="append", metavar="FOLDER", help="push only these folders (repeatable)")
+    b = box.add_parser(
+        "owners",
+        parents=[common, timeout, proj, transfer],
+        help="list every folder of the box, its owner, and how the local copy compares (read-only)",
+        description="Read <inbound>/_owners.json (or the committed index when the transfer program is not "
+        "available) and list every folder: its owning machine and since when, whether it is here, and the "
+        "local copy against the owner's fingerprint: same, different, absent, fetched (only unchanged copies "
+        "fetched from the box), unknown or unowned. Changes nothing.",
+    )
+    b.add_argument("--json", action="store_true", help="print JSON")
+    b = box.add_parser(
+        "release",
+        parents=[common, timeout, proj, dry, transfer],
+        help="give up ownership of folders this machine owns (deletes no data)",
+        description="Remove this machine's ownership entries for these folders from <inbound>/_owners.json, "
+        "so another machine's next push claims them. Only the owning machine can release a folder; no box "
+        "data is deleted. Developer machines only.",
+    )
+    b.add_argument("folders", nargs="+", metavar="FOLDER", help="a folder of the box, as `box owners` names it")
     b = box.add_parser(
         "index", parents=every, help="list the inbound side into box_index.jsonl (with archive contents)"
     )

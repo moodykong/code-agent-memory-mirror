@@ -56,6 +56,11 @@ class RcloneBoxTest(ToolTest):
     def test_push_dry_run_and_cloud_refusal(self):
         rc, out = self.box_run("box", "push", "--dry-run", env=self.rclone_env(CLAUDECODE="1"), az={})
         self.assertEqual(rc, 0, out)
+        self.assertIn("nothing to push: no folder of this box has files", out)
+        write(self.p("temporary", "a.txt"), "a\n")
+        write(self.p("figures", "f.png"), "f\n")
+        rc, out = self.box_run("box", "push", "--dry-run", env=self.rclone_env(CLAUDECODE="1"), az={})
+        self.assertEqual(rc, 0, out)
         self.assertIn(
             "would run: rclone copy %s fakeremote:box/in --filter '- .env' --filter '- *.env' "
             "--filter '- /_archives/**' --filter '- /.agent-mirror/**' --filter '- /_box/**' "
@@ -65,9 +70,13 @@ class RcloneBoxTest(ToolTest):
         )
         rc, out = self.box_run("box", "push", "--dry-run", "--delete", env=self.rclone_env(CLAUDECODE="1"), az={})
         self.assertIn("would run: rclone sync ", out)
-        self.assertIn("would write the writer marker fakeremote:box/in/_writer.json", out)
-        reads = [c for c in self.calls() if c[:2] == ["copyto", "fakeremote:box/in/_writer.json"]]
-        self.assertEqual(self.calls(), reads)  # a dry run only reads the writer marker
+        self.assertIn("would record in fakeremote:box/in/_owners.json: claim figures, claim temporary", out)
+        reads = [
+            c
+            for c in self.calls()
+            if c[0] == "copyto" and c[1] in ("fakeremote:box/in/_owners.json", "fakeremote:box/in/_writer.json")
+        ]
+        self.assertEqual(self.calls(), reads)  # a dry run only reads the ownership files
         os.remove(self.rclone_log)
         rc, out = self.box_run("box", "push", env=self.rclone_env(AGENT_RUNTIME="codex-cloud"), az={})
         self.assertEqual(rc, 2, out)
@@ -75,9 +84,11 @@ class RcloneBoxTest(ToolTest):
         self.assertEqual(self.calls(), [])
 
     def test_push_runs_copy_never_sync(self):
-        rc, out = self.box_run("box", "push", env=self.rclone_env(CLAUDECODE="1"), az={})
+        write(self.p("temporary", "a.txt"), "a\n")
+        remotes = os.path.join(self.base, "remotes")
+        rc, out = self.box_run("box", "push", env=self.rclone_env(CLAUDECODE="1", FAKE_RCLONE_ROOT=remotes), az={})
         self.assertEqual(rc, 0, out)
-        transfers = [c[0] for c in self.calls() if not any(a.endswith("_writer.json") for a in c)]
+        transfers = [c[0] for c in self.calls() if not any(a.endswith(("_writer.json", "_owners.json")) for a in c)]
         self.assertEqual(transfers, ["copy"])
 
     def test_index_filters_and_writes_jsonl(self):
@@ -129,6 +140,7 @@ class RcloneBoxTest(ToolTest):
         self.assertEqual(rc, 2, out)
 
     def test_dry_run_hides_secret_values(self):
+        write(self.p("temporary", "a.txt"), "a\n")
         secret = "s3cr3t-" + "value" * 3
         self.set_box(inbound_remote="fakeremote:" + secret + "/in")
         rc, out = self.box_run(

@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.4.0
+
+- A box can have several writer machines, each owning its own folders. The unit of ownership is a folder
+  unit: every archived folder and every include folder (on rclone, include patterns that do not start with
+  a folder form the unit `.`). `<inbound>/_owners.json` records, per folder, the owning machine's id and
+  name, since when, the fingerprint of its last upload and when it was updated. It replaces the single
+  writer marker `_writer.json`.
+- `box push` claims folders nobody owns (recorded after the upload succeeded), uploads the folders this
+  machine owns, and skips folders another machine owns with a note such as
+  `owned by desk-a since 2026-11-17T10:00:00Z; local copy different`. Skipping is not an error. A rclone
+  push carries only the include patterns of the folders it pushes, so `--delete` never touches another
+  machine's folder. `--only FOLDER` (repeatable) limits a push; `--take-over FOLDER` (repeatable) moves a
+  folder to this machine and uploads it. `--dry-run` reads `_owners.json` and says what would be claimed,
+  uploaded and skipped. A machine whose role is `reader` or `none` is still refused before any transfer.
+- The remote has no locking: every change to `_owners.json` reads it again right before writing, changes
+  only this machine's entries, writes, reads it back and checks them; on a mismatch it tries again (3
+  times), then fails clearly. A folder another machine claimed in the meantime is reported, never taken.
+- `agent-mirror box owners [--json]`: every folder, its owner, whether it is here, and the local copy
+  against the owner's fingerprint (`same`, `different`, `absent`, `fetched`, `unknown`, `unowned`). Read-only; uses
+  the committed index when the transfer program is missing.
+- `agent-mirror box release FOLDER...`: the owning machine gives folders up so another machine's next
+  push claims them. No data is deleted.
+- `box.archives` entries can name nested folders: `"decompile/project*"` or `"decompile/binaries-*"`.
+  Every matching folder is its own archive, named by its relative path
+  (`_archives/decompile/project-cli.tar.gz`, `.json`, `.large/`). A folder inside an archived folder is
+  never an archive of its own; a folder that matches two entries goes with the first, and `doctor` warns
+  about both cases. Large files, tables of contents, the fingerprint skip, safe extraction, sub-path
+  fetch, `box ls` and `box candidates` coverage all work for nested names. An archived folder inside an
+  include folder is left out of that folder's sync.
+- `box index` writes the owners as one line `{"path": "_owners.json", "schema": 1, "owners": {...}}`, and
+  archive entries carry their fingerprint. `box ls` names the owner next to each folder. `plan` compares a
+  box folder by folder: `reconcile` only when a folder owned by another machine is here with different
+  content (listed as a conflict); its note also lists the folders owned here, owned elsewhere and the same
+  or not here, and the folders the next push would claim. The default role is `writer` when this machine
+  owns or would claim a folder.
+- Compatibility: a box with only `_writer.json` reads as that machine owning every folder currently in
+  the box. The first `_owners.json` written for it carries those folders too; `_writer.json` is never
+  deleted. A bare `--take-over` keeps its old meaning only while there is no `_owners.json`. Update
+  agent-mirror on every machine that pushes to a box: older versions read only `_writer.json`.
+- "Same" means the same relative paths, sizes and modification times (whole seconds), the fingerprint
+  archives already used. Copies with equal bytes but other times read as different. A folder whose every
+  file here was fetched from the box and is unchanged since reads as `fetched`, never as a conflict.
+- Tests: ownership on azure-blob (fake az), rclone (fake rclone, and the real rclone against local folders
+  when installed), another machine writing `_owners.json` during a push (once, every time, and claiming the
+  same folder), the old marker, nested archives, and a proof that `apply --dry-run` (and `plan`) change no
+  path, size, time or link and create no machine id.
+
 ## 0.3.1
 
 - Skill comparison reads CRLF as LF in text files, so a skill checked out on Windows and the same skill in the store (git keeps LF) no longer show as different. Binary files are still compared byte for byte. Found on the first real Windows plan, where 11 of 13 differing skills differed only in line endings.

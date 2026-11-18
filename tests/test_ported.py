@@ -412,25 +412,26 @@ class PortedTest(ToolTest):
             % shlex.quote(self.p("figures")),
             out,
         )
-        self.assertIn("docs/slides: skipped (no such folder in the project)", out)
-        self.assertIn("would write the writer marker in-box/demo/_writer.json", out)
+        self.assertIn("folders of demo here (2):", out)
+        self.assertNotIn("docs/slides", out)  # no files there: not a folder of this push
+        self.assertIn("would record in in-box/demo/_owners.json: claim figures, claim temporary", out)
         rc, out = self.box_run("box", "push", "--dry-run", "--delete", env={"CLAUDECODE": "1"})
         self.assertEqual(rc, 0, out)
         self.assertIn("--delete-destination true", out)
         self.assertNotIn("--delete-destination false", out)
-        # a dry run only reads the writer marker
+        # a dry run only reads the ownership files
         names = [c["argv"][c["argv"].index("--name") + 1] for c in self.az_calls()]
-        self.assertEqual(names, ["demo/_writer.json", "demo/_writer.json"])
+        self.assertEqual(names, ["demo/_owners.json", "demo/_writer.json"] * 2)
         self.assertEqual(self.az_calls(), self.az_calls("storage", "blob", "download"))
 
     def test_box_push_syncs_each_root_and_refuses_cloud(self):
         write(self.p("temporary", "keep.txt"), "x\n")
         write(self.p("figures", "f.png"), "x\n")
-        rc, out = self.box_run("box", "push", env={"CLAUDECODE": "1"})
+        rc, out = self.box_run("box", "push", env={"CLAUDECODE": "1", "FAKE_AZ_ROOT": os.path.join(self.base, "c")})
         self.assertEqual(rc, 0, out)
         syncs = self.az_calls("storage", "blob", "sync")
         self.assertEqual(
-            [c["argv"][c["argv"].index("--destination") + 1] for c in syncs], ["demo/temporary/", "demo/figures/"]
+            [c["argv"][c["argv"].index("--destination") + 1] for c in syncs], ["demo/figures/", "demo/temporary/"]
         )
         self.assertTrue(all("false" == c["argv"][c["argv"].index("--delete-destination") + 1] for c in syncs))
         self.assertIn("synced temporary to in-box/demo/temporary/", out)

@@ -1,7 +1,8 @@
-"""Archive mode: a top-level folder with very many small files travels as ONE bundle.
+"""Archive mode: a folder with very many small files travels as ONE bundle.
 
-Configured with box.archives (names or globs of top-level project folders).
-On the remote side, under the inbound root:
+Configured with box.archives: folder paths or globs relative to the project folder ("ws-*",
+"decompile/project-*"). Each matching folder is its own archive, named by its relative path
+(units.py decides which folders match). On the remote side, under the inbound root:
 
   _archives/<name>.tar.gz          the bundle: every file below the large-file threshold
   _archives/<name>.large/<path>    each file at or above box.archive_large_file_bytes, on its own
@@ -14,7 +15,6 @@ fetched only when named or with --all, because cloud machines have little disk.
 """
 
 import datetime
-import fnmatch
 import gzip
 import hashlib
 import json
@@ -27,6 +27,7 @@ import stat
 import subprocess
 import tarfile
 import tempfile
+import time
 
 from agent_mirror import __version__
 from agent_mirror.box.local import FetchRecord, disk_guard, human
@@ -61,66 +62,96 @@ def large_rel(name, path):
 
 
 def sidecar_name(rel):
-    """The archive name when rel is a sidecar path (_archives/<name>.json), else None."""
-    m = re.match(r"^%s/([^/]+)\.json$" % ARCHIVE_DIR, rel)
-    return m.group(1) if m else None
+    """The archive name when rel looks like a sidecar path (_archives/<name>.json), else None.
+
+    A large file inside <name>.large/ can also end in .json, so a parent folder ending in .large rules
+    a path out; callers that read the sidecar also check that its "name" is the same.
+    """
+    m = re.match(r"^%s/(.+)\.json$" % ARCHIVE_DIR, rel)
+    if not m:
+        return None
+    parts = m.group(1).split("/")
+    if any(not p or p in (".", "..") for p in parts) or any(p.endswith(".large") for p in parts[:-1]):
+        return None
+    return m.group(1)
 
 
-def matches(name, globs):
-    return any(fnmatch.fnmatchcase(name, g) for g in globs)
+def entry_problem(g):
+    """Why one box.archives entry is not usable, or None."""
+    if not isinstance(g, str) or not g.strip():
+        return "box.archives entry %r must be a folder path or glob" % (g,)
+    text = g.strip()
+    parts = text.strip("/").split("/")
+    if "\\" in text or text.startswith("/") or "**" in text or any(p in ("", ".", "..") for p in parts):
+        return (
+            "box.archives entry %r must be a folder path or glob relative to the project folder, such as "
+            "ws-* or decompile/project-* (no '..', no '**', no backslashes)" % (g,)
+        )
+    if parts[0] in RESERVED:
+        return "box.archives entry %r names a reserved folder (%s)" % (g, ", ".join(RESERVED))
+    if any(p.endswith(".large") for p in parts[:-1]):
+        return "box.archives entry %r has a parent folder ending in .large, which archives use themselves" % (g,)
+    return None
 
 
 def archive_problems(box):
     problems = []
     value = box.get("archives") or []
     if not isinstance(value, list):
-        return ["box.archives must be a list of top-level folder names or globs"]
+        return ["box.archives must be a list of folder paths or globs"]
     for g in value:
-        if not isinstance(g, str) or not g.strip() or "/" in g.strip("/") or "\\" in g or g.strip() in RESERVED:
-            problems.append("box.archives entry %r must be one top-level folder name or glob" % (g,))
+        p = entry_problem(g)
+        if p:
+            problems.append(p)
     for key in ("archive_large_file_bytes", "toc_inline_bytes", "min_free_bytes"):
         if key in box and (not isinstance(box[key], int) or box[key] < 0):
             problems.append("box.%s must be a whole number of bytes (0 or more)" % key)
     return problems
 
 
-def archive_folders(project_path, globs):
-    found = []
-    try:
-        with os.scandir(project_path) as it:
-            entries = sorted(it, key=lambda e: e.name)
-    except OSError:
-        return found
-    for e in entries:
-        if e.name in RESERVED:
-            continue
-        if e.is_dir(follow_symlinks=False) and matches(e.name, globs):
-            found.append(e.name)
-    return found
+def is_link_dir(path):
+    if os.path.islink(path):
+        return True
+    if os.name == "nt":
+        from agent_mirror.links import is_junction
+
+        return is_junction(path)
+    return False
 
 
-def scan(project_path, folder, rules):
+def scan(project_path, folder, rules, deadline=None, keep=None, prune=()):
     """Regular files under a project folder: [{path (relative to the folder), size, mtime}], skip counts.
 
-    Symbolic links are never followed or packed, env files are always left out,
-    and the box exclude rules apply (relative to the project folder).
+    Symbolic links (and Windows junctions) are never followed or packed, env files are always left
+    out, and the box exclude rules apply (relative to the project folder). folder "." is the project
+    folder itself (its reserved folders are left out). keep(project-relative path) can leave more
+    files out, prune lists project-relative folders that are not walked, and when deadline (a
+    time.monotonic() value) passes the walk stops and the skip counts say "incomplete".
     """
-    base = os.path.join(project_path, *folder.split("/"))
+    top = folder in (".", "")
+    base = project_path if top else os.path.join(project_path, *folder.split("/"))
+    lead = "" if top else folder + "/"
     entries = []
     skipped = {"env": 0, "excluded": 0, "links": 0}
     for root, dirs, files in os.walk(base):
+        if deadline is not None and time.monotonic() > deadline:
+            skipped["incomplete"] = True
+            dirs[:] = []
+            break
         rel_root = os.path.relpath(root, base).replace(os.sep, "/")
         rel_root = "" if rel_root == "." else rel_root
-        keep = []
+        kept = []
         for d in sorted(dirs):
             sub = rel_root + "/" + d if rel_root else d
-            if os.path.islink(os.path.join(root, d)):
+            if (top and not rel_root and d in RESERVED) or (lead + sub) in prune:
+                continue
+            if is_link_dir(os.path.join(root, d)):
                 skipped["links"] += 1
-            elif rules.excluded(folder + "/" + sub + "/"):
+            elif rules.excluded(lead + sub + "/"):
                 skipped["excluded"] += 1
             else:
-                keep.append(d)
-        dirs[:] = keep
+                kept.append(d)
+        dirs[:] = kept
         for f in sorted(files):
             full = os.path.join(root, f)
             sub = rel_root + "/" + f if rel_root else f
@@ -130,8 +161,10 @@ def scan(project_path, folder, rules):
             if is_env_file(f):
                 skipped["env"] += 1
                 continue
-            if rules.excluded(folder + "/" + sub):
+            if rules.excluded(lead + sub):
                 skipped["excluded"] += 1
+                continue
+            if keep is not None and not keep(lead + sub):
                 continue
             try:
                 st = os.stat(full)
@@ -276,19 +309,18 @@ def load_toc(sidecar, side, timeout):
 # push ---------------------------------------------------------------------------------------
 
 
-def push_archives(args, s, side):
-    if not s["archives"]:
-        return 0
-    folders = archive_folders(s["project_path"], s["archives"])
-    if not folders:
-        out("archives: no top-level folder matches %s" % ", ".join(s["archives"]))
-        return 0
-    return sum(push_one(args, s, side, name) for name in folders)
+def local_file(project, name, path):
+    return os.path.join(project, *name.split("/"), *path.split("/"))
 
 
-def push_one(args, s, side, name):
+def push_one(args, s, side, name, scanned=None):
+    """Push one archived folder. Returns {"rc", "fingerprint", "uploaded"}.
+
+    scanned is (entries, skipped) from an earlier scan of the same folder, to walk it only once.
+    """
     project = s["project_path"]
-    entries, skipped = scan(project, name, s["rules"])
+    entries, skipped = scanned if scanned is not None else scan(project, name, s["rules"])
+    base = posixpath.basename(name)
     small, large = split(entries, s["large_bytes"])
     small_bytes = sum(e["size"] for e in small)
     fp_all, fp_bundle = fingerprint(entries), fingerprint(small)
@@ -309,21 +341,22 @@ def push_one(args, s, side, name):
             "  left out: %d env files, %d excluded, %d symbolic links"
             % (skipped["env"], skipped["excluded"], skipped["links"])
         )
+    done = {"rc": 0, "fingerprint": fp_all, "uploaded": False}
     if args.dry_run:
         out("would read %s and skip the upload if its fingerprint is %s" % (side.where(sidecar_rel(name)), fp_all[:16]))
         if small:
-            out("would run: %s" % show_cmd(side.put_cmd("<temp>/%s.tar.gz" % name, bundle_rel(name))))
+            out("would run: %s" % show_cmd(side.put_cmd("<temp>/%s.tar.gz" % base, bundle_rel(name))))
         for e in large[:5]:
-            local = os.path.join(project, name, *e["path"].split("/"))
-            out("would run: %s" % show_cmd(side.put_cmd(local, large_rel(name, e["path"]))))
+            out("would run: %s" % show_cmd(side.put_cmd(local_file(project, name, e["path"]), large_rel(name, e["path"]))))
         if len(large) > 5:
             out("... and %d more large files" % (len(large) - 5))
-        out("would run: %s" % show_cmd(side.put_cmd("<temp>/%s.json" % name, sidecar_rel(name))))
-        return 0
+        out("would run: %s" % show_cmd(side.put_cmd("<temp>/%s.json" % base, sidecar_rel(name))))
+        return done
     remote = parse_json(side.cat(sidecar_rel(name), args.timeout)) or {}
     if remote.get("fingerprint") == fp_all:
         out("%s: unchanged since the last push (fingerprint %s); skipped" % (name, fp_all[:12]))
-        return 0
+        return done
+    failed = dict(done, rc=1)
     remote_toc = dict((e.get("path"), e) for e in (load_toc(remote, side, args.timeout) or []) if isinstance(e, dict))
     tmp = current().mkdtemp("agent-mirror-archive-")
     try:
@@ -332,14 +365,14 @@ def push_one(args, s, side, name):
             if not disk_guard(
                 tmp, small_bytes, BUILD_MARGIN, False, label="a 16 MiB margin (set TMPDIR to a bigger disk)"
             ):
-                return 1
-            path = os.path.join(tmp, name + ".tar.gz")
+                return failed
+            path = os.path.join(tmp, base + ".tar.gz")
             method = build_bundle(project, name, small, path, args.transfer_timeout)
             archive_bytes = os.path.getsize(path)
             ok, detail = side.put(path, bundle_rel(name), args.transfer_timeout)
             if not ok:
                 err("upload of the %s bundle failed: %s" % (name, detail))
-                return 1
+                return failed
             os.remove(path)
             out(
                 "uploaded %s (%d files, %s packed to %s with %s)"
@@ -352,11 +385,10 @@ def push_one(args, s, side, name):
             r = remote_toc.get(e["path"]) or {}
             if r.get("in") == "large" and r.get("size") == e["size"] and r.get("mtime") == e["mtime"]:
                 continue
-            local = os.path.join(project, name, *e["path"].split("/"))
-            ok, detail = side.put(local, large_rel(name, e["path"]), args.transfer_timeout)
+            ok, detail = side.put(local_file(project, name, e["path"]), large_rel(name, e["path"]), args.transfer_timeout)
             if not ok:
                 err("upload of %s/%s failed: %s" % (name, e["path"], detail))
-                return 1
+                return failed
             sent += 1
         if large:
             out(
@@ -365,22 +397,22 @@ def push_one(args, s, side, name):
             )
         sidecar, toc_gz = make_sidecar(name, entries, small, large, s["large_bytes"], archive_bytes, s["toc_inline"])
         if toc_gz is not None:
-            toc_path = os.path.join(tmp, name + ".toc.json.gz")
+            toc_path = os.path.join(tmp, base + ".toc.json.gz")
             with open(toc_path, "wb") as fh:
                 fh.write(toc_gz)
             ok, detail = side.put(toc_path, toc_rel(name), args.transfer_timeout)
             if not ok:
                 err("upload of the %s table of contents failed: %s" % (name, detail))
-                return 1
-        side_path = os.path.join(tmp, name + ".json")
+                return failed
+        side_path = os.path.join(tmp, base + ".json")
         with open(side_path, "w", encoding="utf-8") as fh:
             json.dump(sidecar, fh, indent=1)
         ok, detail = side.put(side_path, sidecar_rel(name), args.transfer_timeout)
         if not ok:
             err("upload of the %s sidecar failed: %s" % (name, detail))
-            return 1
+            return failed
         out("%s: pushed (fingerprint %s)" % (name, fp_all[:12]))
-        return 0
+        return dict(done, uploaded=True)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -389,13 +421,19 @@ def push_one(args, s, side, name):
 
 
 def index_entries(side, names, index_dir, timeout):
-    """Index entries for archives, writing each table of contents to <index dir>/box_toc/."""
+    """Index entries for archives, writing each table of contents to <index dir>/box_toc/<name>.json[.gz].
+
+    names are candidate sidecar names from a listing; a candidate whose file is not a sidecar for that
+    name (a large file that happens to end in .json) is left out quietly.
+    """
     toc_dir = os.path.join(index_dir, "box_toc")
     entries, written = [], set()
-    for name in sorted(names):
+    for name in sorted(set(names)):
         sc = parse_json(side.cat(sidecar_rel(name), timeout))
         if sc is None:
             warn("cannot read the sidecar of archive %s; left out of the index" % name)
+            continue
+        if sc.get("name") != name:
             continue
         toc = load_toc(sc, side, timeout)
         large = sc.get("large") or {}
@@ -408,25 +446,33 @@ def index_entries(side, names, index_dir, timeout):
             "large_files": large.get("files", 0),
             "large_bytes": large.get("bytes", 0),
             "modtime": sc.get("newest_mtime"),
+            "fingerprint": sc.get("fingerprint"),
         }
         if toc is not None:
-            os.makedirs(toc_dir, exist_ok=True)
             data = json.dumps(toc, separators=(",", ":")).encode("utf-8")
-            if len(data) > INDEX_TOC_GZIP:
-                fname = name + ".json.gz"
-                with gzip.open(os.path.join(toc_dir, fname), "wb") as fh:
+            fname = name + (".json.gz" if len(data) > INDEX_TOC_GZIP else ".json")
+            path = os.path.join(toc_dir, *fname.split("/"))
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            if fname.endswith(".gz"):
+                with gzip.open(path, "wb") as fh:
                     fh.write(data)
             else:
-                fname = name + ".json"
-                with open(os.path.join(toc_dir, fname), "wb") as fh:
+                with open(path, "wb") as fh:
                     fh.write(data + b"\n")
             entry["toc"] = "box_toc/" + fname
             written.add(fname)
         entries.append(entry)
     if os.path.isdir(toc_dir):
-        for f in os.listdir(toc_dir):
-            if f.endswith((".json", ".json.gz")) and f not in written:
-                os.remove(os.path.join(toc_dir, f))
+        for root, dirs, files in os.walk(toc_dir, topdown=False):
+            for f in files:
+                rel = os.path.relpath(os.path.join(root, f), toc_dir).replace(os.sep, "/")
+                if f.endswith((".json", ".json.gz")) and rel not in written:
+                    os.remove(os.path.join(root, f))
+            if root != toc_dir:
+                try:
+                    os.rmdir(root)  # only when empty
+                except OSError:
+                    pass
     return entries
 
 
@@ -565,7 +611,7 @@ def fetch_archive(args, s, runtime, side, rel, top):
     skip_large = [] if (want_all or exact_large) else large_part
 
     def local(e):
-        return os.path.join(project, top, *e["path"].split("/"))
+        return local_file(project, top, e["path"])
 
     if not cloud:
         bundle_todo = [e for e in bundle_part if not os.path.lexists(local(e))]
@@ -585,7 +631,7 @@ def fetch_archive(args, s, runtime, side, rel, top):
     rejected = 0
     try:
         if bundle_todo:
-            path = os.path.join(stage, top + ".tar.gz")
+            path = os.path.join(stage, posixpath.basename(top) + ".tar.gz")
             out("downloading %s" % side.where(bundle_rel(top)))
             got = side.get(bundle_rel(top), path, args.transfer_timeout)
             if got != "ok":
@@ -620,7 +666,7 @@ def fetch_archive(args, s, runtime, side, rel, top):
         % (
             len(written),
             human(sum(e["size"] for e in bundle_todo + large_todo)),
-            os.path.join(project, top, *sub.split("/")) if sub else os.path.join(project, top),
+            os.path.join(project, *(top + "/" + sub if sub else top).split("/")),
         )
     )
     if kept:

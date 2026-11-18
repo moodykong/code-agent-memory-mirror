@@ -58,6 +58,18 @@ def simple_name(text):
     return bool(text) and not any(c in text for c in "/[;") and "**" not in text
 
 
+def include_prefix(pattern):
+    """The literal folder an include pattern starts with ('docs/slides/**' -> 'docs/slides'), or None."""
+    parts = []
+    for part in str(pattern).strip().lstrip("/").split("/"):
+        if not part or any(c in part for c in "*?[]{}") or part in (".", ".."):
+            break
+        parts.append(part)
+    if parts and parts == str(pattern).strip().lstrip("/").split("/"):
+        parts = parts[:-1]  # a plain file pattern: its folder
+    return "/".join(parts) or None
+
+
 def include_root(pattern):
     """'results/**' -> 'results'; None for any other shape."""
     p = pattern.strip().lstrip("/")

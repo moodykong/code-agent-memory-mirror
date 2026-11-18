@@ -363,7 +363,7 @@ def full_probe(args, ctx):
     if not found:
         out("skipped: no project matched")
     for name, path, env in found:
-        lines, problems = describe_box(env)
+        lines, problems, warnings = describe_box(env, [path])
         out("--- %s: %s" % (name, lines[0]))
         if lines[0].startswith("not configured") or "not configured yet" in lines[0]:
             continue
@@ -371,6 +371,8 @@ def full_probe(args, ctx):
             out("  " + line)
         for p in problems:
             out("  PROBLEM " + p)
+        for w in warnings:
+            out("  warning " + w)
         box_args = ["--project", name, "--project-path", path]
         tail_run(self_argv(ctx, "box", "index", *box_args), 300, tail=4)
         tail_run(self_argv(ctx, "box", "status", *box_args), 60, tail=6)
@@ -472,7 +474,7 @@ def small_indexed_file(index_path):
                 if i > 20000:
                     break
                 r = json.loads(line)
-                if not isinstance(r, dict) or r.get("archive") or "writer" in r:
+                if not isinstance(r, dict) or r.get("archive") or "writer" in r or "owners" in r:
                     continue
                 size = r.get("size") or 0
                 if 0 < size < 20000 and str(r.get("path", "")).endswith((".md", ".txt", ".json")):

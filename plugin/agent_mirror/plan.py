@@ -30,7 +30,8 @@ from agent_mirror.config import config_agents, config_projects, load_user_config
 from agent_mirror.install import active_copies, memory_link_path
 from agent_mirror.links import is_junction, is_linklike, link_target, resolve_problem
 from agent_mirror.runtime import detect_runtime, parse_agents
-from agent_mirror.sizes import iso_utc, measure
+from agent_mirror.box.rules import include_prefix  # noqa: F401 (kept importable from here)
+from agent_mirror.sizes import iso_utc
 from agent_mirror.util import err, expand, norm, out, tilde, warn, within
 
 SCHEMA = 1
@@ -595,33 +596,40 @@ class Plan:
         backend = str(box.get("backend") or "none").strip().lower()
         if backend == "none":
             return
-        from agent_mirror.box.archive import DEFAULT_LARGE, archive_folders
+        from agent_mirror.box import units as bunits
+        from agent_mirror.box.owners import legacy_entry
 
-        roots = []
-        for pat in box.get("include") or []:
-            root = include_prefix(pat)
-            if root and root not in roots:
-                roots.append(root)
-        globs = [str(g).strip().strip("/") for g in box.get("archives") or []]
-        large = box.get("archive_large_file_bytes")
-        large = DEFAULT_LARGE if large is None else large
+        index = read_box_index(self.store.path("projects", project, "box_index.jsonl"), bunits.settings(box, None))
+        writer = (index or {}).get("writer")
+        in_index = (index or {}).get("folders") or {}
+        owners = (index or {}).get("owners")
+        if owners is None and writer:
+            owners = dict((n, legacy_entry(writer, d.get("fingerprint"))) for n, d in in_index.items())
+        owners = owners or {}
+
+        def walk_first(unit):
+            # folders owned by another machine need a full walk for the comparison: walk them first
+            o = owners.get(unit["name"])
+            return (0 if o and o.get("machine_id") != self.mid else 1, unit["name"])
+
         deadline = time.monotonic() + BOX_WALK_SECONDS
         totals = {"files": 0, "bytes": 0, "newest": None, "lower_bound": False}
-        where = []
+        here = {}  # folder unit -> its summary on this machine (the first checkout that has it)
         for path in self.paths_of(project):
-            folders = [r for r in roots if os.path.isdir(os.path.join(path, *r.split("/")))]
-            folders += [a for a in archive_folders(path, globs) if a not in folders]
-            for rel in folders:
-                m = measure(os.path.join(path, *rel.split("/")), deadline=deadline, large=large)
-                if m["files"]:
-                    where.append(rel)
+            layout = bunits.Layout(bunits.settings(box, path))
+            for unit in sorted(layout.units, key=walk_first):
+                m = layout.summary(unit, deadline)
+                folder = os.path.join(path, *bunits.parts_of(unit["name"]))
+                present = m["files"] > 0 or (m["lower_bound"] and unit["name"] != bunits.TOP and os.path.isdir(folder))
+                if present and unit["name"] not in here:
+                    here[unit["name"]] = m
+                    m["_compare"] = (layout, unit)
                 totals["files"] += m["files"]
                 totals["bytes"] += m["bytes"]
                 totals["lower_bound"] = totals["lower_bound"] or m["lower_bound"]
                 if m["newest"] and (totals["newest"] is None or m["newest"] > totals["newest"]):
                     totals["newest"] = m["newest"]
-        index = read_box_index(self.store.path("projects", project, "box_index.jsonl"))
-        machine_side = {"state": "content" if totals["files"] else "empty", "folders": where}
+        machine_side = {"state": "content" if here else "empty", "folders": sorted(here)}
         machine_side.update(totals)
         if index is None:
             store_side = {"state": "none", "path": "projects/%s/box_index.jsonl" % project}
@@ -633,34 +641,100 @@ class Plan:
                 "bytes": index["bytes"],
                 "newest": index["newest"],
                 "writer": index["writer"],
+                "owners": index["owners"],
             }
-        writer = (index or {}).get("writer")
-        writer_text = (
-            "the current writer is %s (machine id %s, since %s)"
-            % (writer.get("machine_name"), str(writer.get("machine_id"))[:12], writer.get("date"))
-            if writer
-            else "the index names no writer (run `agent-mirror box index` after a push)"
-        )
-        mine = bool(writer and self.mid and writer.get("machine_id") == self.mid)
+        groups = {
+            "owned_here": [],
+            "conflicts": [],
+            "same": [],
+            "fetched": [],
+            "not_compared": [],
+            "elsewhere": [],
+            "unclaimed": [],
+        }
+        for name in sorted(set(here) | set(owners)):
+            owner = owners.get(name)
+            if owner is None:
+                groups["unclaimed"].append(name)
+                continue
+            if self.mid and owner.get("machine_id") == self.mid:
+                groups["owned_here"].append(name)
+                continue
+            if name not in here:
+                groups["elsewhere"].append(name)
+                continue
+            m = here[name]
+            layout, unit = m["_compare"]
+            how = layout.compare(unit, m, owner.get("fingerprint"))
+            if how == "unknown" and m["fingerprint"] and not owner.get("fingerprint") and name in in_index:
+                seen = in_index[name]
+                if (seen.get("files"), seen.get("bytes")) != (m["files"], m["bytes"]):
+                    # no fingerprint recorded, but the index shows other counts or sizes
+                    how = "fetched" if layout.from_box(unit, m["entries"]) else "different"
+            if how == "different":
+                groups["conflicts"].append(name)
+            elif how in ("same", "fetched"):
+                groups[how].append(name)
+            else:
+                groups["not_compared"].append(name)
+
+        def names(items, limit=8):
+            shown = ", ".join(items[:limit])
+            return shown + (" and %d more" % (len(items) - limit) if len(items) > limit else "")
+
+        def who(name):
+            o = owners.get(name) or {}
+            return o.get("machine_name") or str(o.get("machine_id") or "?")[:12]
+
         notes = []
-        if machine_side["state"] == "content" and store_side["state"] == "content":
-            same = not totals["lower_bound"] and totals["files"] == index["files"] and totals["bytes"] == index["bytes"]
-            case = "identical" if same else "reconcile"
-            notes.append(writer_text + (" (this machine)" if mine else ""))
-        elif machine_side["state"] == "content":
-            case = "first-setup"
-            if writer:
-                notes.append(writer_text + (" (this machine)" if mine else ""))
-        elif store_side["state"] == "content":
-            case = "join"
-            notes.append(writer_text + (" (this machine)" if mine else ""))
-        else:
-            case = "nothing"
+        if writer and index and index.get("owners") is None:
+            notes.append(
+                "the current writer is %s (machine id %s, since %s; old single-writer marker: it owns every "
+                "folder in the box until a push writes _owners.json)"
+                % (writer.get("machine_name"), str(writer.get("machine_id"))[:12], writer.get("date"))
+                + (" (this machine)" if self.mid and writer.get("machine_id") == self.mid else "")
+            )
+        elif store_side["state"] == "content" and not owners:
+            notes.append("the index names no owners (run `agent-mirror box index` after a push)")
+        if groups["owned_here"]:
+            notes.append("owned by this machine: %s" % names(groups["owned_here"]))
+        if groups["conflicts"]:
+            notes.append(
+                "conflicts, owned elsewhere and different here: %s"
+                % ", ".join("%s (owner %s)" % (n, who(n)) for n in groups["conflicts"])
+            )
+        if groups["same"]:
+            notes.append("owned elsewhere, the same here: %s" % names(groups["same"]))
+        if groups["fetched"]:
+            notes.append("owned elsewhere, here only as fetched from the box: %s" % names(groups["fetched"]))
+        if groups["not_compared"]:
+            notes.append("owned elsewhere, here but not compared (no fingerprint or the walk ran out of time): %s" % names(groups["not_compared"]))
+        if groups["elsewhere"]:
+            notes.append("owned elsewhere, not here: %s" % names(groups["elsewhere"]))
+        if groups["unclaimed"]:
+            notes.append("not in the box or owned by no machine yet (the next push from here claims them): %s" % names(groups["unclaimed"]))
         if totals["lower_bound"]:
             notes.append("local sizes are a lower bound (the walk stopped early)")
-        u = self.add("box:%s" % project, "box", project, case, machine_side, store_side, note="; ".join(notes))
+        if machine_side["state"] == "content" and store_side["state"] == "content":
+            case = "reconcile" if groups["conflicts"] else "identical"
+        elif machine_side["state"] == "content":
+            case = "first-setup"
+        elif store_side["state"] == "content":
+            case = "join"
+        else:
+            case = "nothing"
+        u = self.add(
+            "box:%s" % project,
+            "box",
+            project,
+            case,
+            machine_side,
+            store_side,
+            note="; ".join(notes),
+            extra={"box_folders": groups},
+        )
         if case == "identical":
-            u["default_action"] = "writer" if (mine or not writer) else "reader"
+            u["default_action"] = "writer" if (groups["owned_here"] or groups["unclaimed"]) else "reader"
             if u["decided_by"] != "recorded":
                 u["decision"] = u["default_action"]
                 u["decided_by"] = "default"
@@ -698,23 +772,21 @@ class Plan:
         return None
 
 
-def include_prefix(pattern):
-    """The literal folder an include pattern starts with ('docs/slides/**' -> 'docs/slides'), or None."""
-    parts = []
-    for part in str(pattern).strip().lstrip("/").split("/"):
-        if not part or any(c in part for c in "*?[]{}") or part in (".", ".."):
-            break
-        parts.append(part)
-    if parts and parts == str(pattern).strip().lstrip("/").split("/"):
-        parts = parts[:-1]  # a plain file pattern: its folder
-    return "/".join(parts) or None
+def read_box_index(path, s=None):
+    """{"files", "bytes", "newest", "writer", "owners", "folders"} from a committed box index, or None.
 
-
-def read_box_index(path):
-    """{"files", "bytes", "newest", "writer"} from a committed box index, or None when there is none."""
+    owners is the _owners.json folders map (None when the index has no such line); folders gives, per
+    folder unit in the index, {"files", "bytes", "fingerprint"} (archives always; include folders when
+    the box settings s are given).
+    """
     if not os.path.isfile(path):
         return None
-    found = {"files": 0, "bytes": 0, "newest": None, "writer": None}
+    from agent_mirror.box import units as bunits
+    from agent_mirror.box.owners import clean_folders
+
+    found = {"files": 0, "bytes": 0, "newest": None, "writer": None, "owners": None, "folders": {}}
+    globs = (s or {}).get("archives") or []
+    layout_folders = bunits.folder_units((s or {}).get("include") or [], globs) if s else []
     try:
         with open(path, encoding="utf-8") as fh:
             for line in fh:
@@ -730,12 +802,22 @@ def read_box_index(path):
                 if isinstance(r.get("writer"), dict):
                     found["writer"] = r["writer"]
                     continue
+                if isinstance(r.get("owners"), dict):
+                    found["owners"] = clean_folders({"folders": r["owners"]})
+                    continue
                 if r.get("archive"):
-                    found["files"] += int(r.get("files") or 0)
-                    found["bytes"] += int(r.get("bytes") or 0)
+                    files, size = int(r.get("files") or 0), int(r.get("bytes") or 0)
+                    if r.get("path"):
+                        found["folders"][r["path"]] = {"files": files, "bytes": size, "fingerprint": r.get("fingerprint")}
                 else:
-                    found["files"] += 1
-                    found["bytes"] += int(r.get("size") or 0)
+                    files, size = 1, int(r.get("size") or 0)
+                    unit = bunits.unit_of_file(str(r.get("path") or ""), layout_folders, globs, s["exclude"]) if s else None
+                    if unit:
+                        d = found["folders"].setdefault(unit, {"files": 0, "bytes": 0, "fingerprint": None})
+                        d["files"] += 1
+                        d["bytes"] += size
+                found["files"] += files
+                found["bytes"] += size
                 m = r.get("modtime")
                 if isinstance(m, str) and m[:1].isdigit() and (found["newest"] is None or m > found["newest"]):
                     found["newest"] = m

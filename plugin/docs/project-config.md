@@ -124,8 +124,9 @@ them; how Claude picks its memory folder in that case is UNVERIFIED. Commands th
 ## `box`
 
 The box moves untracked bulk files (results, figures, slides) between the developer machine and agents.
-Two sides: **inbound** (the developer machine uploads with `box push`; agents read with `box index` and
-`box fetch`) and **outbound** (agents upload results with `box send`; the developer pulls them by hand).
+Two sides: **inbound** (developer machines upload with `box push`, each the folders it owns; agents read
+with `box index` and `box fetch`) and **outbound** (agents upload results with `box send`; the developer
+pulls them by hand).
 
 Common keys:
 
@@ -139,7 +140,7 @@ Settings for on-demand retrieval (all optional):
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `archives` | none | top-level folder names or globs (for example `["ws-*", "decompile"]`) sent as one bundle each; see "Archive mode" |
+| `archives` | none | folder paths or globs relative to the project folder (for example `["ws-*", "decompile/project*"]`); every matching folder is sent as one bundle; see "Archive mode" |
 | `archive_large_file_bytes` | `52428800` (50 MiB) | in archived folders, files this big or bigger travel on their own instead of inside the bundle; `0` keeps everything in the bundle |
 | `toc_inline_bytes` | `5000000` | a table of contents bigger than this goes into its own `<name>.toc.json.gz` instead of the sidecar |
 | `min_free_bytes` | `2147483648` (2 GiB) | free disk that every fetch and receive must leave; `--force` overrides |
@@ -165,7 +166,7 @@ Uses the Azure CLI (`az`) with Azure AD sign-in only (`--auth-mode login`, never
   prefixes and file names. Other shapes are refused with a clear message.
 - `box push` runs one `az storage blob sync` per include folder with `--delete-destination false`
   (pass `--delete` to delete remote files whose local file is gone). It is refused on a cloud runtime.
-  One machine writes each box: see "One writer per box" below.
+  Each folder has one owning machine: see "Folder owners" below.
 - `box fetch` downloads through a staging folder and never overwrites a local file on a local runtime.
 - `box send` uploads to `<outbound_container>/<prefix>/<runtime>-<UTC time>/<path>`, never overwriting.
 - On a cloud runtime, when `az account show` fails, agent-mirror signs `az` in as a service principal
@@ -185,7 +186,9 @@ Uses `rclone`, which reaches OneDrive, S3, Google Drive, SFTP and many more.
 | `outbound_remote` | `"remote:path"` for results, e.g. `"onedrive:agent-box/outbound/my-project"` |
 
 - `box push`: `rclone copy <project> <inbound_remote>` with `--filter` rules built from `include` and
-  `exclude` (env files first, then excludes, then includes, then `- **`). `rclone sync` only with `--delete`.
+  `exclude` (env files first, then excludes, then the include patterns of the folders this push carries,
+  then `- **`). `rclone sync` only with `--delete`; folders the push does not carry are filtered out, so
+  sync never deletes them.
 - `box index`: `rclone lsjson -R --files-only` into `projects/<name>/box_index.jsonl`.
 - `box fetch`: `rclone copyto` (a file) or `rclone copy` (a folder), with `--ignore-existing` on a
   local runtime so local files are never overwritten.
@@ -197,7 +200,10 @@ Uses `rclone`, which reaches OneDrive, S3, Google Drive, SFTP and many more.
 ### Archive mode
 
 For folders with very many small files on slow backends (a consumer cloud drive, say), set `box.archives`.
-Each top-level project folder whose name matches is left out of the file-by-file push and travels as:
+Each entry is a folder path or glob relative to the project folder, with one or more `/`-separated
+levels: `"ws-*"`, `"decompile/project*"`, `"decompile/binaries-*"`. Every folder that matches becomes its
+own archive, named by its relative path (`decompile/project-cli`), is left out of the file-by-file push,
+and travels as:
 
 ```
 <inbound>/_archives/<name>.tar.gz          the bundle: every file below archive_large_file_bytes
@@ -205,6 +211,21 @@ Each top-level project folder whose name matches is left out of the file-by-file
 <inbound>/_archives/<name>.json            the sidecar (uploaded last)
 <inbound>/_archives/<name>.toc.json.gz     the table of contents, only when it is too big for the sidecar
 ```
+
+For `decompile/project-cli` that is `_archives/decompile/project-cli.tar.gz` and so on.
+
+- `*`, `?` and `[...]` match within one level; `**` is not allowed. Matching never follows links.
+- A folder inside an archived folder is never an archive of its own (with `["decompile",
+  "decompile/project*"]`, `decompile` is the one archive).
+- A folder should match one entry. When it matches two, the first entry wins and `doctor` warns (also
+  for the case above).
+- Entries cannot start at `_archives`, `.agent-mirror` or `.git`, and a parent folder cannot end in
+  `.large`.
+- An include folder inside an archived folder is carried by the archive; an archived folder inside an
+  include folder is left out of that folder's sync and travels as its own archive.
+- Changing an entry (say from `decompile` to `decompile/project*`) leaves the old `_archives/decompile.*`
+  objects in the box until you delete them; `box ls` and `box fetch` use the archive the current entries
+  name.
 
 The sidecar holds the file count, total bytes, newest modification time, the archive size, the
 agent-mirror version, a fingerprint (made from the sorted relative paths, sizes and modification times),
@@ -215,27 +236,47 @@ and the table of contents: every file's relative path and size, marked `"in": "b
   the temp folder first (set `TMPDIR` to use another disk). It skips the upload when the remote sidecar's
   fingerprint matches, re-sends the bundle only when a small file changed, sends only the large files that
   changed, and removes the temp archive afterwards. Remote large files that no longer exist locally stay.
-- `box index` lists each archive as one entry (`"archive": true`, file count, bytes, large files) and
-  writes its table of contents to `projects/<name>/box_toc/<folder>.json` (gzipped when big) in the store.
+- `box index` lists each archive as one entry (`"archive": true`, file count, bytes, large files,
+  fingerprint) and writes its table of contents to `projects/<name>/box_toc/<folder>.json` (gzipped when
+  big, in sub-folders for nested names) in the store.
   Commit those files with the index so a cloud agent can browse without downloading anything.
 - `box fetch <archived folder>` downloads the bundle, extracts it safely (absolute paths, `..` members,
   devices and links pointing outside are rejected) and prints the large files it did not fetch, with their
   sizes and the exact command for each. `box fetch <path to a large file>` fetches that one file.
   `box fetch <folder> --all` fetches the bundle and every large file. `box fetch <sub-path>` extracts only
-  that part of the bundle and lists the large files under it. A local runtime never overwrites existing
-  files; a cloud runtime does.
+  that part of the bundle and lists the large files under it. This works the same for nested names
+  (`box fetch decompile/project-cli/data`). A local runtime never overwrites existing files; a cloud
+  runtime does.
 - `box send <folder> --archive` sends a folder to the outbound side as one `.tar.gz`.
 
-### One writer per box
+### Folder owners
 
-`box push` (both backends) writes `<inbound>/_writer.json` on the first push for a project: the
-machine id, machine name, date and tool version. A later push from a machine with another id is refused
-before any transfer, and the message names the current writer; `box push --take-over` makes this machine
-the writer. A machine whose recorded role for the project (`agent-mirror apply`, unit `box:<project>`)
-is `reader` or `none` is refused before anything else. `--dry-run` reads the marker and says what a push
-would do. `box index` records the marker in the index, so `agent-mirror plan` names the writer offline.
-On azure-blob the marker is `<inbound_container>/<prefix>/_writer.json`; on rclone it is
-`<inbound_remote>/_writer.json`. Neither `--delete` mode removes it.
+A box can have several writer machines, each owning its own folders. The units of ownership are the
+**folder units**:
+
+- every archived folder (a folder matching a `box.archives` entry, named by its relative path);
+- every include folder: the folder part of an include pattern (`results` for `results/**`). An include
+  folder inside another one belongs to the outer one;
+- on rclone, include patterns that do not start with a folder (`*.pdf`, `notes.md`) form the unit `.`: the
+  matching files that are not inside another unit's folder.
+
+`<inbound>/_owners.json` (azure-blob: `<inbound_container>/<prefix>/_owners.json`; rclone:
+`<inbound_remote>/_owners.json`) names the owning machine of each folder:
+
+```json
+{"schema": 1, "folders": {"<folder>": {"machine_id": "...", "machine_name": "...", "since": "...",
+                                       "fingerprint": "...", "updated": "..."}}}
+```
+
+`box push` claims folders nobody owns, uploads the folders this machine owns, and skips (not an error)
+folders another machine owns, saying whether the local copy is the same. `--only FOLDER` limits a push,
+`--take-over FOLDER` moves a folder to this machine, `box release FOLDER` gives one up (no data is
+deleted), and `box owners` lists them all. A machine whose recorded role for the project
+(`agent-mirror apply`, unit `box:<project>`) is `reader` or `none` is refused before any transfer. The
+remote has no locking: every change reads the file again, changes only this machine's entries, writes and
+checks. Neither `--delete` mode removes `_owners.json`, and `--delete` deletes only inside the folders the
+push carries. The fingerprint, the old single-writer marker (`_writer.json`) and a worked example with two
+machines: reconciliation.md, "Folder owners".
 
 ### What could go in the box (`box candidates`)
 
@@ -243,7 +284,7 @@ On azure-blob the marker is `<inbound_container>/<prefix>/_writer.json`; on rclo
 read-only helper: it lists the project's entries that git ignores or does not track (every top-level
 entry when the folder is not a git repo) with sizes, file counts, large files, newest change, a kind
 guess (`rebuildable`, `secret`, `worktree`, `candidate`) and whether `box.include` or `box.archives`
-already cover them. Details: reconciliation.md.
+already cover them (`partly covered` when archived folders sit inside an entry). Details: reconciliation.md.
 
 ### On-demand retrieval
 
@@ -332,7 +373,7 @@ A cloud machine has no rclone config file. rclone also reads a remote from envir
     "prefix": "my-project",
     "include": ["results/**", "docs/slides/**", "figures/**"],
     "exclude": ["results/scratch/**", "**/__pycache__/**", "**/.env", "**/*.env"],
-    "archives": ["ws-*"],
+    "archives": ["ws-*", "decompile/project*"],
     "archive_large_file_bytes": 52428800,
     "min_free_bytes": 2147483648
   },
@@ -354,7 +395,7 @@ An rclone box instead:
   "outbound_remote": "onedrive:agent-box/outbound/my-project",
   "include": ["results/**", "figures/**"],
   "exclude": ["**/__pycache__/**"],
-  "archives": ["decompile"],
+  "archives": ["decompile/project*", "decompile/binaries-*"],
   "receive_dir": "_agent_outbound",
   "mount_dir": "_box"
 }

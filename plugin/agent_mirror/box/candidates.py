@@ -13,11 +13,11 @@ import json
 import os
 import time
 
-from agent_mirror.box.archive import DEFAULT_LARGE, matches
+from agent_mirror.box.archive import DEFAULT_LARGE
 from agent_mirror.box.local import human
-from agent_mirror.box.rules import Rules
+from agent_mirror.box.rules import Rules, include_prefix
+from agent_mirror.box.units import archive_unit_of, archive_units
 from agent_mirror.config import resolve_project
-from agent_mirror.plan import include_prefix
 from agent_mirror.sizes import measure
 from agent_mirror.util import err, out, run
 
@@ -115,30 +115,39 @@ def plain_entries(project):
     return found
 
 
-def coverage(rel, is_dir, box):
-    """'covered', 'partly covered', 'excluded' or '' for one entry against box.include and box.archives."""
+def coverage(rel, is_dir, box, archived=()):
+    """'covered', 'partly covered', 'excluded' or '' for one entry against box.include and box.archives.
+
+    archived: the archived folders found in the project; one inside rel makes rel partly covered.
+    """
     if not box:
         return ""
-    top = rel.split("/")[0]
     archives = [str(g).strip().strip("/") for g in box.get("archives") or []]
-    if archives and matches(top, archives):
+    if archives and archive_unit_of(rel, archives):
         return "covered (archive)"
+    inside = [a for a in archived if a.startswith(rel + "/")]
     rules = Rules(box.get("include") or [], box.get("exclude") or [])
     probe = rel + "/" if is_dir else rel
     hit = rules.excluded(probe)
     if hit:
         return "excluded (%s)" % hit
+    partly = None
+    if inside:
+        partly = "partly covered (archived: %s%s)" % (
+            ", ".join(inside[:3]),
+            " and %d more" % (len(inside) - 3) if len(inside) > 3 else "",
+        )
     for pat in box.get("include") or []:
         root = include_prefix(pat)
         if not root:
             continue
         if rel == root or rel.startswith(root + "/"):
             return "covered"
-        if root.startswith(rel + "/"):
-            return "partly covered (%s)" % pat
+        if root.startswith(rel + "/") and partly is None:
+            partly = "partly covered (%s)" % pat
     if not is_dir and rules.included(rel):
         return "covered"
-    return ""
+    return partly or ""
 
 
 def cmd_candidates(args, ctx):
@@ -157,6 +166,8 @@ def cmd_candidates(args, ctx):
     truncated = len(entries) > ENTRY_CAP
     entries = entries[:ENTRY_CAP]
     rules_by_path = ignore_rules(path, [p for p, how in entries if how == "ignored"]) if in_git else {}
+    globs = [str(g).strip().strip("/") for g in box.get("archives") or [] if isinstance(g, str)]
+    archived = archive_units(path, globs)[0] if globs else []
     start = time.monotonic()
     deadline = start + max(0.5, args.time_budget)
     rows = []
@@ -184,7 +195,7 @@ def cmd_candidates(args, ctx):
                 "large_files": size["large_files"],
                 "newest": size["newest"],
                 "lower_bound": size["lower_bound"],
-                "box": coverage(rel, is_dir, box),
+                "box": coverage(rel, is_dir, box, archived),
                 "note": note,
             }
         )
