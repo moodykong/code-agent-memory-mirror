@@ -401,6 +401,26 @@ Every session writes its own namespace on the sessions side:
   runtime, branch, commit, last update, file count and size of the newest 50 sessions, for offline use;
   `box sessions` stays the live source.
 
+#### Cost on slow remotes
+
+On some remotes (a consumer cloud drive through rclone, say) every call to rclone or az costs seconds: the
+program starts, signs in and makes its round trips. So the sessions commands use a fixed number of calls,
+however many sessions the box holds:
+
+| Command | Calls |
+| --- | --- |
+| `box sessions` | 2: one recursive listing of the sessions side (it also gives the file counts and sizes of namespaces without a manifest), one batched read of the manifests |
+| `box fetch --session ID` | 3 for a full id (that namespace's listing, its manifest, one download), a unique start of an id (the listing, the manifest, one download) or a label (the listing, the batched manifest read, one download); archives come in the same download |
+| `box send` | 3 for the first send of a session (upload, manifest write, read back), 4 later (upload, manifest read, write, read back) |
+| `box prune --yes` | rclone: 5 (listing, manifests, one `rclone delete` with an anchored filter `+ /<session id>/**` per selected namespace and `- **`, one `rclone rmdirs` with the same filters for the emptied folders, a check); azure-blob: one `delete-batch` per selected namespace plus 3 |
+| `box index` | 2 for its session summary |
+
+Fetching by full id is the cheapest lookup: it never looks at other sessions. `--limit` cuts what
+`box sessions` reads: rclone downloads only the manifests it shows; azure-blob downloads every manifest in
+the one batched call (one pattern) and the list is cut afterwards. A batched azure-blob download is one
+`az storage blob download-batch` whose pattern is chosen from the listing; when every pattern would also
+fetch more than 16 MiB of other files, it goes file by file instead.
+
 ### `box receive`
 
 `box receive [--into DIR]` downloads every session's files that are not in `DIR` yet (default

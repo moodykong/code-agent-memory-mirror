@@ -284,9 +284,70 @@ def sent_entries(s, rel, archive_info=None):
 # listing --------------------------------------------------------------------------------------------
 
 
-def summary_of(side, sid, timeout):
-    """One row for `box sessions`: from the manifest, or from the files of an older namespace."""
-    m = read_manifest(side, sid, timeout)
+class View:
+    """What one command learns about the sessions side, kept so that no call is made twice.
+
+    One recursive listing gives every namespace, every file and its size; the manifests are read in one
+    batched call (rclone: one `copy --files-from`; azure-blob: one `download-batch` with a pattern). So the
+    number of transfer calls of a sessions command does not grow with the number of sessions.
+    """
+
+    def __init__(self, side, timeout):
+        self.side = side
+        self.timeout = timeout
+        self._listing = None
+        self._listed = False
+        self.manifests = {}  # session id -> manifest dict, or None when it has none
+
+    def listing(self):
+        """[{path, size, modtime}] of every file on the sessions side (one call), or None on an error."""
+        if not self._listed:
+            listed = self.side.list("", self.timeout)
+            self._listed = True
+            self._listing = None if listed is None else [f for f in listed if f.get("path")]
+        return self._listing
+
+    def names(self):
+        """(session namespaces newest first, count of other top-level folders), from the listing."""
+        tops = set(f["path"].split("/", 1)[0] for f in self._listing or [] if "/" in f["path"])
+        good = [n for n in tops if looks_like_session(n)]
+        return newest_first(good), len(tops) - len(good)
+
+    def files(self, sid):
+        cut = len(sid) + 1
+        return [dict(f, path=f["path"][cut:]) for f in self._listing or [] if f["path"].startswith(sid + "/")]
+
+    def read(self, ids):
+        """{id: manifest or None}, reading the ones not read yet in one batched call."""
+        need = [i for i in ids if i not in self.manifests]
+        names = set(f["path"] for f in self._listing) if self._listing is not None else None
+        rels = [i + "/" + MANIFEST for i in need if names is None or i + "/" + MANIFEST in names]
+        for i in need:
+            self.manifests[i] = None
+        if rels:
+            tmp = current().mkdtemp("agent-mirror-manifests-")
+            try:
+                found, problem = self.side.get_present("", rels, tmp, self.timeout, listed=self._listing)
+                if problem:
+                    warn("cannot read every session manifest: %s" % problem)
+                for rel in found:
+                    sid = rel.split("/", 1)[0]
+                    try:
+                        with open(os.path.join(tmp, sid, MANIFEST), encoding="utf-8") as fh:
+                            data = json.load(fh)
+                    except (OSError, ValueError):
+                        continue
+                    if isinstance(data, dict) and data.get("id") == sid:
+                        self.manifests[sid] = data
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
+        return dict((i, self.manifests.get(i)) for i in ids)
+
+
+def summary_of(view, sid):
+    """One row for `box sessions`: from the manifest (read beforehand with view.read), or from the files of
+    an older namespace in the listing."""
+    m = view.manifests.get(sid)
     if m:
         files = [f for f in m.get("files") or [] if isinstance(f, dict)]
         git = m.get("git") or {}
@@ -304,7 +365,7 @@ def summary_of(side, sid, timeout):
             "promoted": len(m.get("promoted") or []),
             "manifest": True,
         }
-    listed = side.list(sid, timeout) or []
+    listed = view.files(sid)
     stamps = sorted(str(f.get("modtime") or "") for f in listed if f.get("modtime"))
     started = started_of(sid)
     return {
@@ -321,15 +382,6 @@ def summary_of(side, sid, timeout):
         "promoted": 0,
         "manifest": False,
     }
-
-
-def session_names(side, timeout):
-    """(session namespaces, newest first, count of other folders) or (None, problem)."""
-    names = side.dirs("", timeout)
-    if names is None:
-        return None, "cannot list %s" % scrub(side.where())
-    good = [n for n in names if looks_like_session(n)]
-    return newest_first(good), len(names) - len(good)
 
 
 def tool_ready(s):
@@ -367,12 +419,14 @@ def cmd_sessions(args, s, runtime):
         total, others = len(line["sessions"]) + int(line.get("more") or 0), 0
         where = "the index %s" % s["index_path"]
     else:
-        names, others = session_names(side, args.timeout)
-        if names is None:
-            err(others)
+        view = View(side, args.transfer_timeout)  # one call walks the whole side: the transfer timeout
+        if view.listing() is None:
+            err("cannot list %s" % scrub(side.where()))
             return 1
+        names, others = view.names()
         total = len(names)
-        rows = [summary_of(side, n, args.timeout) for n in names[:limit]]
+        view.read(names[:limit])
+        rows = [summary_of(view, n) for n in names[:limit]]
         where = scrub(side.where())
     if args.json:
         out(json.dumps({"project": s["project"], "where": where, "total": total, "sessions": rows}, indent=2))
@@ -410,44 +464,49 @@ def cmd_sessions(args, s, runtime):
     return 0
 
 
-def resolve(side, ident, timeout, seen=None):
-    """(session id, None) or (None, problem) for an id, a unique start of one, or a label.
+def resolve(view, ident):
+    """(session id, its files [{path, size, modtime}], None), or (None, None, problem).
 
-    seen, a dict, collects the manifests read on the way ({id: manifest or None}).
+    A full id is checked directly (one listing of that namespace, nothing about other sessions); a start of
+    an id needs the one listing of the sessions side; a label also needs the one batched manifest read.
     """
-    seen = {} if seen is None else seen
-    names, others = session_names(side, timeout)
-    if names is None:
-        return None, others
-    if ident in names:
-        return ident, None
+    side = view.side
+    if ID_RX.match(ident) or OLD_RX.match(ident):
+        listed = side.list(ident, view.timeout)
+        if listed is None:
+            return None, None, "cannot list %s" % scrub(side.where(ident))
+        listed = [f for f in listed if f.get("path")]
+        if listed:
+            return ident, listed, None
+        if ID_RX.match(ident):
+            return None, None, "no session %s in the box (see `agent-mirror box sessions`)" % ident
+    if view.listing() is None:
+        return None, None, "cannot list %s" % scrub(side.where())
+    names, _ = view.names()
     starts = [n for n in names if n.startswith(ident)]
     if len(starts) == 1:
-        return starts[0], None
+        return starts[0], view.files(starts[0]), None
     if len(starts) > 1:
-        return None, "%s matches %d sessions (%s); give more of the id" % (ident, len(starts), ", ".join(starts[:5]))
-    for n in names[:READ_CAP]:
-        seen[n] = read_manifest(side, n, timeout)
-    hits = [n for n in names[:READ_CAP] if (seen[n] or {}).get("label") == ident]
-    if len(hits) == 1:
-        return hits[0], None
-    if hits:
-        return None, "the label %s is on %d sessions (%s); use an id" % (ident, len(hits), ", ".join(hits[:5]))
-    return None, "no session matches %s (see `agent-mirror box sessions`)" % ident
+        return None, None, "%s matches %d sessions (%s); give more of the id" % (ident, len(starts), ", ".join(starts[:5]))
+    if LABEL_RX.match(ident):
+        found = view.read(names[:READ_CAP])
+        hits = [n for n in names[:READ_CAP] if (found[n] or {}).get("label") == ident]
+        if len(hits) == 1:
+            return hits[0], view.files(hits[0]), None
+        if hits:
+            return None, None, "the label %s is on %d sessions (%s); use an id" % (ident, len(hits), ", ".join(hits[:5]))
+    return None, None, "no session matches %s (see `agent-mirror box sessions`)" % ident
 
 
-def session_files(side, sid, timeout, seen=None):
-    """(files [{path, size, modtime}] without the manifest, archive entries {object: entry}, manifest) or a problem."""
-    listed = side.list(sid, timeout)
-    if listed is None:
-        return None, "cannot list %s" % scrub(side.where(sid))
-    manifest = seen[sid] if (seen and sid in seen) else read_manifest(side, sid, timeout)
+def session_files(view, sid, listed):
+    """(files without the manifest, archive entries {object: entry}, manifest) of one session."""
+    manifest = view.read([sid])[sid]
     archives = {}
     for e in (manifest or {}).get("files") or []:
         if isinstance(e, dict) and e.get("archive") and e.get("object") and clean_rel(e.get("path") or ""):
             archives[e["object"]] = e
-    files = [f for f in listed if f.get("path") and f["path"] != MANIFEST and clean_rel(f["path"]) == f["path"]]
-    return (files, archives, manifest), None
+    files = [f for f in listed if f["path"] != MANIFEST and clean_rel(f["path"]) == f["path"]]
+    return files, archives, manifest
 
 
 def select(files, archives, rel):
@@ -470,20 +529,16 @@ def wanted_members(bundle, top, sub):
         return set(n for n in tf.getnames() if n == want or n.startswith(want + "/"))
 
 
-def download(side, sid, plain, parts, stage, timeout, overwrite):
-    """Download into stage: plain files at their paths, archives extracted (safely) at their paths.
-
-    Returns (list of relative paths now in stage, problem or None).
-    """
-    got = side.get_many(sid, [f["path"] for f in plain], stage, timeout)
+def download(side, sid, plain, parts, stage, timeout, overwrite, listed=None):
+    """Download into stage, in one call: plain files at their paths, and the archives, which are then
+    extracted (safely) at their paths. Returns (list of relative paths now in stage, problem or None)."""
+    objects = [e["object"] for e, _ in parts]
+    got = side.get_many(sid, [f["path"] for f in plain] + objects, stage, timeout, listed)
     if got != "ok":
         return [], "cannot download from %s: %s" % (scrub(side.where(sid)), got)
     done = [f["path"] for f in plain]
     for e, sub in parts:
-        bundle = os.path.join(stage, ".bundle-%s.tar.gz" % os.urandom(4).hex())
-        g = side.get("%s/%s" % (sid, e["object"]), bundle, timeout)
-        if g != "ok":
-            return done, "cannot download %s: %s" % (e["object"], g)
+        bundle = os.path.join(stage, *e["object"].split("/"))
         try:
             wanted = wanted_members(bundle, e["path"], sub)
             names, _, rejected = archive.safe_extract(bundle, stage, e["path"], wanted, overwrite=overwrite)
@@ -523,16 +578,12 @@ def cmd_fetch(args, s, runtime):
             return 2
     if args.dry_run:
         out("dry run: nothing will change")
-    seen = {}
-    sid, problem = resolve(side, args.session, args.timeout, seen)
+    view = View(side, args.transfer_timeout)
+    sid, listed, problem = resolve(view, args.session)
     if problem:
         err(problem)
         return 1
-    found, problem = session_files(side, sid, args.timeout, seen)
-    if problem:
-        err(problem)
-        return 1
-    files, archives, manifest = found
+    files, archives, manifest = session_files(view, sid, listed)
     plain, parts = select(files, archives, rel)
     if not plain and not parts:
         err("nothing at %s in the session %s" % (rel or "the top", sid))
@@ -566,7 +617,7 @@ def cmd_fetch(args, s, runtime):
     record = FetchRecord(project) if within(os.path.realpath(dest), os.path.realpath(project)) else None
     written = []
     try:
-        got, problem = download(side, sid, todo, parts, stage, args.transfer_timeout, overwrite=True)
+        got, problem = download(side, sid, todo, parts, stage, args.transfer_timeout, overwrite=True, listed=listed)
         if problem:
             err(problem)
         for p in got:
@@ -639,16 +690,12 @@ def cmd_promote(args, s, runtime, backend, plat):
     if not backend.ready(args.dry_run):
         return 1
     side = side_for(s, "sessions")
-    seen = {}
-    sid, problem = resolve(side, args.session, args.timeout, seen)
+    view = View(side, args.transfer_timeout)
+    sid, listed, problem = resolve(view, args.session)
     if problem:
         err(problem)
         return 1
-    found, problem = session_files(side, sid, args.timeout, seen)
-    if problem:
-        err(problem)
-        return 1
-    files, archives, manifest = found
+    files, archives, manifest = session_files(view, sid, listed)
     plain, parts = select(files, archives, rel)
     if not plain and not parts:
         err("nothing at %s in the session %s" % (rel, sid))
@@ -725,7 +772,7 @@ def cmd_promote(args, s, runtime, backend, plat):
         return 0
     stage = current().mkdtemp("agent-mirror-promote-")
     try:
-        got, problem = download(side, sid, plain, parts, stage, args.transfer_timeout, overwrite=True)
+        got, problem = download(side, sid, plain, parts, stage, args.transfer_timeout, overwrite=True, listed=listed)
         if problem:
             err(problem)
             return 1
@@ -814,10 +861,11 @@ def cmd_prune(args, s, runtime):
         err("say which sessions to delete: --older-than DAYS and/or --session ID")
         return 2
     side = side_for(s, "sessions")
-    names, others = session_names(side, args.timeout)
-    if names is None:
-        err(others)
+    view = View(side, args.transfer_timeout)
+    if view.listing() is None:
+        err("cannot list %s" % scrub(side.where()))
         return 1
+    names, others = view.names()
     chosen = []
     for i in ids:
         if i in names:
@@ -825,21 +873,21 @@ def cmd_prune(args, s, runtime):
         else:
             warn("%s is not in the box; skipped" % i)
     now = datetime.datetime.now(datetime.timezone.utc)
-    manifests = {}
     if args.older_than is not None:
         cutoff = now - datetime.timedelta(days=float(args.older_than))
+        found = view.read(names)
         for n in names:
-            m = manifests.setdefault(n, read_manifest(side, n, args.timeout))
-            when = parse_utc((m or {}).get("updated")) or started_of(n)
+            when = parse_utc((found[n] or {}).get("updated")) or started_of(n)
             if when and when < cutoff and n not in chosen:
                 chosen.append(n)
+    found = view.read(chosen)
     rows = []
     for n in newest_first(chosen):
-        m = manifests[n] if n in manifests else read_manifest(side, n, args.timeout)
+        m = found[n]
         if args.keep_promoted and m and m.get("promoted"):
             out("kept %s: something in it was promoted (--keep-promoted)" % n)
             continue
-        listed = side.list(n, args.timeout) or []
+        listed = view.files(n)
         rows.append((n, len(listed), sum(int(f.get("size") or 0) for f in listed), (m or {}).get("label"), (m or {}).get("updated")))
     if not rows:
         out("no session to delete")
@@ -854,15 +902,23 @@ def cmd_prune(args, s, runtime):
     if not args.yes:
         out("nothing deleted: run the same command with --yes to delete these sessions (the shared tree is never touched)")
         return 0
-    failed = 0
-    for n, _, _, _, _ in rows:
-        ok, detail = side.delete_tree(n, args.transfer_timeout)
-        left = side.list(n, args.timeout)
-        if not ok or left:
-            err("could not delete %s completely: %s" % (n, detail if not ok else "%d file(s) are still there" % len(left)))
-            failed += 1
-    out("deleted %d session(s) (%s)" % (len(rows) - failed, human(total)))
-    return 1 if failed else 0
+    doomed = [r[0] for r in rows]
+    if any(not looks_like_session(n) for n in doomed):  # the listing only yields such names; checked again anyway
+        err("refusing to delete names that do not look like session ids")
+        return 2
+    ok, detail = side.delete_trees(doomed, args.transfer_timeout)
+    after = View(side, args.transfer_timeout)
+    if after.listing() is None:
+        warn("could not list %s again to check the deletion" % scrub(side.where()))
+        left = set()
+    else:
+        left = set(n for n in after.names()[0] if n in doomed)
+    if not ok:
+        err("deleting failed: %s" % detail)
+    for n in sorted(left):
+        err("could not delete %s completely: %d file(s) are still there" % (n, len(after.files(n))))
+    out("deleted %d session(s) (%s)" % (len(doomed) - len(left), human(total)))
+    return 1 if (left or not ok) else 0
 
 
 # box index -----------------------------------------------------------------------------------------------
@@ -871,15 +927,17 @@ def cmd_prune(args, s, runtime):
 def index_line(s, timeout):
     """A compact summary of the newest sessions for the committed index, or None when the side cannot be listed."""
     side = side_for(s, "sessions")
-    names, others = session_names(side, timeout)
-    if names is None:
-        warn("%s; the index has no session summary" % others)
+    view = View(side, timeout)
+    if view.listing() is None:
+        warn("cannot list %s; the index has no session summary" % scrub(side.where()))
         return None
+    names, _ = view.names()
     if not names:
         return None
+    view.read(names[:INDEX_CAP])
     rows = []
     for n in names[:INDEX_CAP]:
-        r = summary_of(side, n, timeout)
+        r = summary_of(view, n)
         rows.append(dict((k, r.get(k)) for k in ("id", "label", "runtime", "branch", "commit", "updated", "files", "bytes")))
     return {"path": "_sessions", "sessions": rows, "more": max(0, len(names) - INDEX_CAP)}
 

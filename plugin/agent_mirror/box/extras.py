@@ -75,17 +75,17 @@ def cmd_receive(args, s, runtime):
     else:
         stage = tempfile.mkdtemp(prefix=".agent-mirror-receive-", dir=into)
         try:
+            # one batched download where the backend allows it (the listing above tells it what is there)
+            got = side.get_many("", [it["path"] for it in missing], stage, args.transfer_timeout, listed=items)
+            if got != "ok":
+                err("cannot download from %s: %s" % (side.where(), got))
+                return 1
             for it in missing:
-                tmp = os.path.join(stage, "f")
-                got = side.get(it["path"], tmp, args.transfer_timeout)
-                if got != "ok":
-                    err("cannot download %s: %s" % (it["path"], got))
-                    return 1
                 dest = os.path.join(into, *it["path"].split("/"))
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
                 if os.path.lexists(dest):
                     continue
-                os.replace(tmp, dest)
+                os.replace(os.path.join(stage, *it["path"].split("/")), dest)
         finally:
             shutil.rmtree(stage, ignore_errors=True)
     out(

@@ -15,7 +15,7 @@ Both can be unit-tested on any OS by passing a platform name and an environment 
 
 | | Linux (including WSL 2) | macOS | Windows (native) |
 | --- | --- | --- | --- |
-| Test suite | runs and passes (Python 3.9 and 3.10) | UNVERIFIED | runs and passes natively (Python 3.11, Windows 11), under the sandbox guard, from a copy in the temp folder; one POSIX-shell test skipped; the real profile's before and after fingerprints were identical (0.3.0, and again for 0.4.0 and 0.5.0) |
+| Test suite | runs and passes (Python 3.9 and 3.10) | UNVERIFIED | runs and passes natively (Python 3.11, Windows 11), under the sandbox guard, from a copy in the temp folder; one POSIX-shell test skipped; the real profile's before and after fingerprints were identical (0.3.0, and again for 0.4.0, 0.5.0 and 0.5.1) |
 | Folder mapping (homes, config, cache) | verified | unit-tested only | verified under `AGENT_MIRROR_HOME`; the real-profile mapping (USERPROFILE, APPDATA) unit-tested only; Claude home verified |
 | Claude memory folder name (slug) | verified | UNVERIFIED | verified (see below) |
 | Links | symlinks, verified | symlinks, UNVERIFIED | symlinks verified (Developer Mode on); real junctions verified by test; managed copies verified with a simulated symlink failure only |
@@ -264,4 +264,16 @@ Checked in real sessions with an rclone box (2026-11):
 - The rclone box worked through the proxy: listing, fetching an archived folder, sending a file.
 - `box mount` is not possible there (no FUSE helper). Fetch on demand is the method.
 - With two repos selected the session starts in the folder above the clones; project discovery and the extra memory link for that folder worked.
+
+Checked with 0.5.0 in three hosted cloud sessions of one vendor, with a consumer cloud drive as the box
+through rclone (2026-11):
+
+- Two sessions each sent a result with a label; a third session listed both with `box sessions` and fetched
+  both by label with `box fetch --session`.
+- The setup script finished in seconds, and a public companion repo cloned by it was linked next to the
+  project at session start.
+- On that remote every rclone start plus its round trip costs several seconds, and 0.5.0 made one call per
+  session in several commands: with 8 sessions, a fetch by label took minutes and pruning 5 small sessions
+  took over two minutes. Since 0.5.1 the sessions commands make a fixed number of calls (see "Cost on slow
+  remotes" in project-config.md); that is checked with the fake tools, not yet on that remote again.
 

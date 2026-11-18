@@ -416,6 +416,11 @@ if argv[:3] == ["storage", "blob", "delete-batch"]:
             os.rmdir(r)  # blob storage has no folders of its own
     entry["deleted"] = gone
     finish(0)
+for flag in ("--name", "--prefix", "--destination-path"):
+    value = opt(flag)
+    if value is not None and (value.startswith("/") or "//" in value):
+        sys.stderr.write("fake az: the blob name %r has an empty path part\n" % value)
+        finish(2)
 if argv[:3] == ["storage", "blob", "download"]:
     name = opt("--name")
     src = stored_path(name)
@@ -561,6 +566,44 @@ if argv[:1] == ["purge"]:
     base = stored(argv[1])
     if base and os.path.isdir(base):
         shutil.rmtree(base)
+    finish(0)
+
+
+def filter_rx(glob):
+    # an rclone filter glob: a leading / anchors at the root, ** crosses folders, * and ? do not
+    anchored = glob.startswith("/")
+    g = glob[1:] if anchored else glob
+    rx, i = "", 0
+    while i < len(g):
+        if g.startswith("**", i):
+            rx, i = rx + ".*", i + 2
+        elif g[i] == "*":
+            rx, i = rx + "[^/]*", i + 1
+        elif g[i] == "?":
+            rx, i = rx + "[^/]", i + 1
+        else:
+            rx, i = rx + re.escape(g[i]), i + 1
+    return re.compile(("^" if anchored else "^(?:.*/)?") + rx + "$")
+
+
+if argv[:1] == ["delete"]:
+    base = stored(argv[1])
+    rules = [(argv[i + 1][0], filter_rx(argv[i + 1][2:])) for i, a in enumerate(argv) if a == "--filter"]
+    deleted = []
+    if base and os.path.isdir(base):
+        for f in walk(base):
+            sign = next((s for s, rx in rules if rx.match(f)), "+")
+            if sign == "+":
+                os.remove(os.path.join(base, *f.split("/")))
+                deleted.append(f)
+    entry["deleted"] = deleted
+    finish(0)
+if argv[:1] == ["rmdirs"]:
+    base = stored(argv[1])
+    if base and os.path.isdir(base):
+        for r, _, _ in sorted(os.walk(base), key=lambda x: -len(x[0])):
+            if r != base and not os.listdir(r):
+                os.rmdir(r)
     finish(0)
 if argv[:1] == ["copyto"] and is_remote(argv[1]) and not under_inbound(argv[1]):
     src = stored(argv[1])

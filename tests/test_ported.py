@@ -470,7 +470,9 @@ class PortedTest(ToolTest):
         self.assertEqual(lines[0], {"path": "docs/slides/d.pptx", "size": 4, "modtime": stamp})
         self.assertIn("left out 1 blobs", out)
         self.assertFalse(os.path.exists(self.s("projects", "demo", "box_index.jsonl")))
-        lists = [c for c in self.az_calls("storage", "blob", "list") if "--delimiter" not in c["argv"]]
+        lists = [
+            c for c in self.az_calls("storage", "blob", "list") if c["argv"][c["argv"].index("--container-name") + 1] == "in-box"
+        ]
         self.assertEqual(len(lists), 2)  # the shared side, paged (the other listing is the sessions summary)
         self.assertNotIn("--marker", lists[0]["argv"])
         self.assertEqual(lists[1]["argv"][lists[1]["argv"].index("--marker") + 1], "2")

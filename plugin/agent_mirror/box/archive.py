@@ -332,6 +332,26 @@ def read_sidecars(side, names, timeout):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def read_tocs(side, sidecars, timeout):
+    """{toc_file: table of contents} for sidecars whose table of contents is a file of its own, in one batch."""
+    rels = [sc["toc_file"][len(ARCHIVE_DIR) + 1 :] for sc in sidecars if str(sc.get("toc_file") or "").startswith(ARCHIVE_DIR + "/")]
+    if not rels:
+        return {}
+    tmp = current().mkdtemp("agent-mirror-tocs-")
+    try:
+        found, _ = side.get_present(ARCHIVE_DIR, rels, tmp, timeout)
+        result = {}
+        for rel in found:
+            try:
+                with gzip.open(os.path.join(tmp, *rel.split("/")), "rb") as fh:
+                    result[ARCHIVE_DIR + "/" + rel] = json.loads(fh.read().decode("utf-8"))
+            except (OSError, ValueError):
+                continue
+        return result
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def local_file(project, name, path):
     return os.path.join(project, *name.split("/"), *path.split("/"))
 
@@ -454,14 +474,17 @@ def index_entries(side, names, index_dir, timeout):
     """
     toc_dir = os.path.join(index_dir, "box_toc")
     entries, written = [], set()
-    for name in sorted(set(names)):
-        sc = parse_json(side.cat(sidecar_rel(name), timeout))
+    names = sorted(set(names))
+    sidecars = read_sidecars(side, names, timeout)  # one batched read, not one per archive
+    tocs = read_tocs(side, [sc for sc in sidecars.values() if sc and sc.get("toc") is None and sc.get("toc_file")], timeout)
+    for name in names:
+        sc = sidecars.get(name)
         if sc is None:
             warn("cannot read the sidecar of archive %s; left out of the index" % name)
             continue
         if sc.get("name") != name:
             continue
-        toc = load_toc(sc, side, timeout)
+        toc = sc["toc"] if sc.get("toc") is not None else tocs.get(sc.get("toc_file"))
         large = sc.get("large") or {}
         entry = {
             "path": name,

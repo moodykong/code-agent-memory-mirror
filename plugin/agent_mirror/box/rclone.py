@@ -199,7 +199,7 @@ def index(args, s, runtime):
                 RcloneSide(s, "shared"), args.timeout, owners.OWNERS in has_marker, owners.LEGACY in has_marker
             ):
                 fh.write(json.dumps(line) + "\n")
-            summary = sessions.index_line(s, args.timeout)
+            summary = sessions.index_line(s, args.transfer_timeout)
             if summary is not None:
                 fh.write(json.dumps(summary) + "\n")
         os.replace(partial, index_path)

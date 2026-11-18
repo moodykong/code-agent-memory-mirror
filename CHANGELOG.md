@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.5.1
+
+- The sessions commands make a fixed number of rclone or az calls, however many sessions the box holds.
+  Real use on a consumer cloud drive, where every call costs seconds, showed 0.5.0 taking minutes for a
+  fetch by label with 8 sessions and over two minutes to prune 5 small ones, because it read each manifest,
+  listed each namespace without one and deleted each namespace with a call of its own.
+  - `box sessions`: one recursive listing (it also gives the counts and sizes of namespaces without a
+    manifest) and one batched manifest read: 2 calls. With `--limit`, rclone reads only the manifests shown;
+    azure-blob reads them all in its one call and cuts the list afterwards.
+  - `box fetch --session`: 3 calls for a full id (only that namespace is looked at), a unique start of an id
+    or a label; the label lookup is not repeated within the command, and archives come in the same download.
+  - `box prune --yes`: rclone deletes all selected namespaces with one `rclone delete` (an anchored
+    `+ /<id>/**` filter per namespace, then `- **`) and one `rclone rmdirs` with the same filters for the
+    emptied folders: 5 calls. azure-blob still needs one `delete-batch` per selected namespace, because one fnmatch pattern
+    cannot name several prefixes without matching others.
+  - `box index` reads its session summary the same way, and reads archive sidecars and separate tables of
+    contents in batches. `box receive` downloads in one batch on azure-blob too.
+  - azure-blob batches several files into one `az storage blob download-batch`, with a pattern chosen from
+    the listing; when every pattern would also fetch more than 16 MiB of other files, it goes file by file.
+  - `box send` stays at 3 calls for the first send of a session and 4 later; the manifest read before a
+    write and the read back after it are both needed so that no other writer's change is lost.
+- Tests count the calls with 3 and with 30 sessions (and 3 and 30 shared folders) on both fake backends and
+  require the same count under a ceiling; a prune next to a look-alike name (a selected id that is the start
+  of another namespace's name) deletes only the selected namespace, also with the real rclone.
+- platforms.md records what the real cloud sessions showed; project-config.md has a "Cost on slow remotes"
+  note.
+
 ## 0.5.0
 
 - The two sides of the box are now called **shared** (was inbound) and **sessions** (was outbound) in

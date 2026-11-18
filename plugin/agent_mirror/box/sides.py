@@ -16,6 +16,16 @@ from agent_mirror.platforms import current
 from agent_mirror.util import short
 
 MISSING_RC = (3, 4)  # rclone: directory not found, file not found
+BATCH_EXTRA_BYTES = 16 * 1024**2  # a batched azure download may fetch this much of other files, no more
+
+
+def _esc(text):
+    """Escape fnmatch wildcards (az batch commands match blob names with fnmatch)."""
+    return re.sub(r"([*?\[])", r"[\1]", text)
+
+
+def _common_suffix(texts):
+    return os.path.commonprefix([t[::-1] for t in texts])[::-1]
 
 
 def _not_found(text):
@@ -121,27 +131,95 @@ class AzureSide:
                 found.add(rest.split("/", 1)[0])
         return sorted(found)
 
-    def get_many(self, base, rels, stage, timeout):
+    def get_many(self, base, rels, stage, timeout, listed=None):
         """Download base/<rel> for each rel to stage/<rel>. 'ok' or an error message."""
-        for r in rels:
-            got = self.get(base + "/" + r, os.path.join(stage, *r.split("/")), timeout)
-            if got != "ok":
-                return "%s: %s" % (r, got)
-        return "ok"
+        found, problem = self.get_present(base, rels, stage, timeout, listed)
+        if problem:
+            return problem
+        missing = [r for r in rels if r not in found]
+        return "ok" if not missing else "%d file(s) did not arrive, for example %s" % (len(missing), missing[0])
 
-    def get_present(self, base, rels, stage, timeout):
-        """Download the files of rels that exist under base into stage. (set of rels that arrived, problem)."""
+    def batch_pattern(self, base, rels, listed):
+        """The download-batch pattern that fetches rels from base, or None when every pattern tried would also
+        fetch more than BATCH_EXTRA_BYTES of other files. Tries the files' common ending and common start."""
+        sizes = dict((f["path"], int(f.get("size") or 0)) for f in listed if f.get("path"))
+        wanted = set(rels)
+        tried = []
+        suffix = _common_suffix(rels)
+        if suffix:
+            tried.append(("*" + _esc(suffix), lambda p: p.endswith(suffix)))
+        start = os.path.commonprefix(rels)
+        tried.append((_esc(start) + "*", lambda p: p.startswith(start)))
+        best = None
+        for tail, test in tried:
+            extra = sum(n for p, n in sizes.items() if test(p) and p not in wanted)
+            if extra <= BATCH_EXTRA_BYTES and (best is None or extra < best[1]):
+                best = (tail, extra)
+        return None if best is None else _esc(self.blob(base)) + "/" + best[0]
+
+    def get_present(self, base, rels, stage, timeout, listed=None):
+        """Download the files of rels that exist under base into stage. (set of rels that arrived, problem).
+
+        Several files go in one `az storage blob download-batch` (after one listing, unless listed, the
+        files under base, is given); one file, or a pattern that would fetch too much else, goes file by file.
+        """
+        rels = list(rels)
+        if len(rels) > 1 and (listed is not None or len(rels) > 2):
+            if listed is None:
+                listed = self.list(base, timeout)
+            if listed is not None:
+                names = set(f["path"] for f in listed if f.get("path"))
+                present = [r for r in rels if r in names]
+                if not present:
+                    return set(), None
+                pattern = self.batch_pattern(base, present, listed) if len(present) > 1 else None
+                if pattern:
+                    return self.download_batch(base, present, pattern, stage, timeout)
+                rels = present
         found = set()
         for r in rels:
-            got = self.get(base + "/" + r, os.path.join(stage, *r.split("/")), timeout)
+            got = self.get("%s/%s" % (base, r) if base else r, os.path.join(stage, *r.split("/")), timeout)
             if got == "ok":
                 found.add(r)
             elif got != "missing":
                 return found, got
         return found, None
 
+    def download_batch_cmd(self, pattern, dest):
+        cmd = ["az", "storage", "blob", "download-batch"] + self._storage()
+        cmd += ["--source", self.container, "--destination", dest, "--pattern", pattern]
+        return cmd + ["--no-progress", "--only-show-errors", "-o", "none"]
+
+    def download_batch(self, base, rels, pattern, stage, timeout):
+        dl = os.path.join(stage, ".agent-mirror-batch")
+        os.makedirs(dl, exist_ok=True)
+        try:
+            rc, stdout, stderr = run_transfer(self.download_batch_cmd(pattern, dl), timeout)
+            if rc != 0:
+                return set(), short(stderr or stdout or "rc %s" % rc, 400)
+            found = set()
+            for r in rels:
+                src = os.path.join(dl, *(self.blob(base) + "/" + r).split("/"))
+                if os.path.isfile(src):
+                    dest = os.path.join(stage, *r.split("/"))
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    os.replace(src, dest)
+                    found.add(r)
+            return found, None
+        finally:
+            shutil.rmtree(dl, ignore_errors=True)
+
+    def delete_trees(self, rels, timeout):
+        """Delete each namespace: one delete-batch per namespace, because one fnmatch pattern cannot name
+        several prefixes without also matching others. (ok, problem)."""
+        for rel in rels:
+            ok, detail = self.delete_tree(rel, timeout)
+            if not ok:
+                return False, "%s: %s" % (rel, detail)
+        return True, None
+
     def delete_tree_cmd(self, rel):
-        pattern = re.sub(r"([*?\[])", r"[\1]", self.blob(rel)) + "/*"
+        pattern = _esc(self.blob(rel)) + "/*"
         cmd = ["az", "storage", "blob", "delete-batch"] + self._storage()
         return cmd + ["--source", self.container, "--pattern", pattern, "--only-show-errors", "-o", "none"]
 
@@ -246,7 +324,7 @@ class RcloneSide:
             return None  # a folder that does not exist yet holds none of them
         return short(stderr or stdout or "rc %s" % rc, 400)
 
-    def get_many(self, base, rels, stage, timeout):
+    def get_many(self, base, rels, stage, timeout, listed=None):
         """One `rclone copy --files-from` for every rel under base, into stage. 'ok' or an error message."""
         if not rels:
             return "ok"
@@ -256,12 +334,39 @@ class RcloneSide:
         missing = [r for r in rels if not os.path.isfile(os.path.join(stage, *r.split("/")))]
         return "ok" if not missing else "%d file(s) did not arrive, for example %s" % (len(missing), missing[0])
 
-    def get_present(self, base, rels, stage, timeout):
+    def get_present(self, base, rels, stage, timeout, listed=None):
         """One `rclone copy --files-from` for rels under base (missing ones are skipped). (arrived, problem)."""
         if not rels:
             return set(), None
         problem = self.copy_listed(base, rels, stage, timeout)
         return set(r for r in rels if os.path.isfile(os.path.join(stage, *r.split("/")))), problem
+
+    @staticmethod
+    def tree_filters(rels):
+        """--filter flags naming exactly these top-level folders: anchored at the root, with the slash."""
+        flags = []
+        for rel in rels:
+            flags += ["--filter", "+ /%s/**" % rel]
+        return flags + ["--filter", "- **"]
+
+    def delete_trees_cmd(self, rels):
+        return ["rclone", "delete", self.where("")] + self.tree_filters(rels)
+
+    def rmdirs_cmd(self, rels):
+        return ["rclone", "rmdirs", self.where(""), "--leave-root"] + self.tree_filters(rels)
+
+    def delete_trees(self, rels, timeout):
+        """Delete these namespaces in one call, then remove the folders that are left empty, with the same
+        filters (no file is removed by that second call). (ok, problem)."""
+        if not rels:
+            return True, None
+        rc, stdout, stderr = run_transfer(self.delete_trees_cmd(rels), timeout)
+        if rc != 0 and rc not in MISSING_RC:
+            return False, short(stderr or stdout or "rc %s" % rc, 400)
+        rc, stdout, stderr = run_transfer(self.rmdirs_cmd(rels), timeout)
+        if rc != 0 and rc not in MISSING_RC:
+            return False, "the files are deleted, but removing empty folders failed: %s" % short(stderr or stdout, 300)
+        return True, None
 
     def delete_tree_cmd(self, rel):
         return ["rclone", "purge", self.where(rel)]
