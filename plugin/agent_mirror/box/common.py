@@ -6,7 +6,8 @@ import subprocess
 from agent_mirror.box.archive import DEFAULT_LARGE, DEFAULT_TOC_INLINE, archive_problems
 from agent_mirror.box.local import min_free
 from agent_mirror.box.rules import Rules, azure_rule_problems, clean_rel, generic_rule_problems
-from agent_mirror.config import load_env_file, resolve_project
+from agent_mirror.config import load_env_file
+from agent_mirror.projects import box_project
 from agent_mirror.platforms import new_group_kwargs, stop_tree
 from agent_mirror.util import err, exe_path, expand, out, scrub, tilde
 
@@ -40,7 +41,7 @@ def side_key_names(backend, side):
 
 def box_context(args, ctx):
     """Return (settings, None), or (None, exit code) when there is nothing to do."""
-    project, project_path = resolve_project(ctx, args.project, args.project_path)
+    project, project_path = box_project(ctx, args.project, args.project_path)
     if getattr(args, "env_file", None):
         path = os.path.realpath(expand(args.env_file))
         env = load_env_file(path)

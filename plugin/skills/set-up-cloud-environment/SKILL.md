@@ -67,14 +67,14 @@ Ask the user to open the vendor's environment page and create or edit the enviro
 
 - **Network hosts:** `agent-mirror clip copy <allowed-hosts file>`, then `agent-mirror clip check`. Tell the user which access level to choose and where to paste.
 - **Variables:** `agent-mirror clip copy --secret <values file>`, then `agent-mirror clip check --secret`. Confirm the names match the runbook, then the user pastes. If the page takes one variable at a time, copy them one by one.
-- **Setup script:** `agent-mirror clip copy <setup script>`, then `agent-mirror clip check`. After pasting, the user replaces each placeholder named in the runbook with the item they created, on the page only. The copy in the store keeps its placeholder.
+- **Setup script:** `agent-mirror clip copy <setup script>`, then `agent-mirror clip check`. After pasting, the user replaces each placeholder named in the runbook with the item they created, on the page only (the store token only needs read access). The copy in the store keeps its placeholder. The script is pasted once per environment: later project settings changes reach the machine at session start, and raising its `# revision:` number makes the vendor rebuild the machine.
 - The user saves.
 
 If there is no clipboard tool on this machine, tell the user which file to open and select from. For the values file, they open it themselves; you still do not print it.
 
 ### 6. First session
 
-Give the user the first-session prompt from the runbook and ask them to start a session with the new environment on the repos they want. The prompt sends the probe report into that session's namespace on the sessions side of the box, so it can be read back without copying (`agent-mirror box sessions` lists it).
+Give the user the first-session prompt from the runbook and ask them to start a session with the new environment on the repos they want, with the store repo selected too (select it in every session: pulls and memory pushes go through the vendor's access to the selected repos). The prompt sends the probe report into that session's namespace on the sessions side of the box, so it can be read back without copying (`agent-mirror box sessions` lists it).
 
 When the user says it ran:
 

@@ -176,6 +176,12 @@ def build_parser():
     s = sub.add_parser("session-start", parents=[common, timeout, proj, dry], help="run at the start of every session")
     s.add_argument("--agent", choices=AGENT_NAMES, help="override the agent taken from the runtime")
     s.add_argument("--sync-timeout", type=int, default=1800, help="seconds for each project command (default 1800)")
+    s.add_argument(
+        "--repair-timeout",
+        type=int,
+        default=900,
+        help="cloud: seconds in all for running setup steps again when the store changed them (default 900)",
+    )
     s.set_defaults(func=lazy("session", "cmd_session_start"))
 
     s = sub.add_parser("sync", parents=[common, timeout, dry], help="scan, commit, pull and push store changes")
@@ -298,7 +304,11 @@ def build_parser():
         "to the same namespace; a second send of a path replaces it. Every machine and later session can "
         "list it with `box sessions` and fetch it with `box fetch --session`.",
     )
-    b.add_argument("path", help="path relative to the project folder")
+    b.add_argument(
+        "path",
+        help="a file or folder: relative to the project folder, else to the current folder (or absolute); "
+        "one outside the project folder is sent under its base name",
+    )
     b.add_argument("--archive", action="store_true", help="send a folder as one .tar.gz")
     b.add_argument(
         "--label",
@@ -383,7 +393,7 @@ def build_parser():
     for box_parser in box.choices.values():
         box_parser.set_defaults(func=lazy("box", "cmd_box"))
 
-    s = sub.add_parser("cloud", parents=[common], help="cloud environments: render, secrets, runbook")
+    s = sub.add_parser("cloud", parents=[common], help="cloud environments: render, secrets, runbook, bootstrap")
     cloud = s.add_subparsers(dest="cloud_action", metavar="action")
     cloud.required = True
     c = cloud.add_parser(
@@ -400,6 +410,20 @@ def build_parser():
     how.add_argument("--check", action="store_true", help="show what can be produced now; never prints values")
     how.add_argument("--out", metavar="FILE", help="write NAME=value lines to a new owner-only file outside any repo")
     c.add_argument("--replace", action="store_true", help="with --out: overwrite an existing owner-only file")
+    c = cloud.add_parser(
+        "bootstrap",
+        parents=[common, timeout, dry],
+        help="on a cloud machine: set it up from the store's project settings (run by the setup script)",
+        description="Run by the fixed setup script on a cloud machine. Reads each project's env.json from the "
+        "store's default branch and runs its setup steps (companion repos, python through uv, setup_commands, "
+        "each timed into the setup note file), then init-store --adopt, install and (claude) hooks install. "
+        "Records a stamp of the setup inputs on this machine, so that session-start can run the steps again "
+        "when the store changes them. Refuses to run on a developer machine.",
+    )
+    c.add_argument("--project", action="append", required=True, metavar="NAME", help="a project (repeatable)")
+    c.add_argument("--vendor", choices=["claude", "codex"], required=True, help="which vendor's machine this is")
+    c.add_argument("--note", metavar="FILE", help="the setup note file (default ~/agent_setup_probe.txt)")
+    c.add_argument("--step-timeout", type=int, default=1800, help="seconds for each setup command (default 1800)")
     c = cloud.add_parser("runbook", parents=[common], help="print the setup steps for a person (or --json)")
     c.add_argument("--project", required=True, help="project name under projects/ in the store")
     c.add_argument("--vendor", choices=["claude", "codex", "all"], default="all", help="which vendor (default all)")

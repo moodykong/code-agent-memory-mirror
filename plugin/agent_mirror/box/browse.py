@@ -9,7 +9,7 @@ from agent_mirror.box.archive import read_local_toc
 from agent_mirror.box.local import FetchRecord, free_bytes, human, min_free
 from agent_mirror.box.rules import clean_rel
 from agent_mirror.box.units import archive_unit_of
-from agent_mirror.config import resolve_project
+from agent_mirror.projects import box_project
 from agent_mirror.runtime import CLOUD_RUNTIMES, detect_runtime
 from agent_mirror.util import err, out, warn, within
 
@@ -169,7 +169,7 @@ def cmd_ls(args, s):
 
 
 def project_and_box(args, ctx):
-    project, path = resolve_project(ctx, args.project, args.project_path)
+    project, path = box_project(ctx, args.project, args.project_path)
     store = ctx.store_or_none(quiet=True)
     box = (store.load_env(project).get("box") or {}) if (store and project) else {}
     return project, path, box

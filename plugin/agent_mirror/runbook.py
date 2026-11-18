@@ -33,10 +33,21 @@ PRODUCTS = {
     "claude": "Claude Code on the web (claude.ai/code)",
     "codex": "Codex cloud (newer VM product and legacy container product)",
 }
-PROBE_PROMPT = (
-    "Run agent-mirror probe --full from the session folder. Reply with its complete output in one code "
-    "block, unchanged. Do not do anything else."
+PROBE_COMMAND = (
+    "cd <clone> && agent-mirror probe --full > probe_output.txt 2>&1 && "
+    "agent-mirror box send probe_output.txt --label first-probe"
 )
+
+
+def probe_prompt(project_repo):
+    """The first-session prompt: the report is written inside the project clone, then sent to the box."""
+    return (
+        "Run this command, with <clone> replaced by the folder of your clone of %s:\n%s\n"
+        "Then reply with the complete content of probe_output.txt in one code block, unchanged, followed by the "
+        "output of the box send. Do not do anything else." % (project_repo, PROBE_COMMAND)
+    )
+
+
 PLACEHOLDER = re.compile(r"<[A-Z][A-Z0-9_]*>")
 
 
@@ -99,7 +110,9 @@ def build(project, vendor, env, scripts, hosts, info):
                 "setup.sh",
                 "Setup script",
                 "Open the environment for %s, paste setup.sh into its setup script box, then replace each placeholder "
-                "on the settings page (never in the store)." % info["project_repo"],
+                "on the settings page (never in the store). Paste it once: it stays the same when the project "
+                "settings change (they take effect at the next session start); raise its `# revision:` number to "
+                "make the vendor rebuild its cached machine." % info["project_repo"],
             )
         )
     else:
@@ -108,7 +121,8 @@ def build(project, vendor, env, scripts, hosts, info):
                 "vm-install.sh",
                 "Setup script (newer VM product)",
                 "Select both repos in the environment: %s and the store %s (Codex checks the store out with its own "
-                "access). Paste vm-install.sh as the install script and add vm-start-skill.md as the start skill "
+                "access). Paste vm-install.sh as the install script (once: it stays the same when the project "
+                "settings change) and add vm-start-skill.md as the start skill "
                 "(UNVERIFIED how the product triggers a start skill). If the store checkout is not found by its folder "
                 "name %s, set AGENT_MIRROR_STORE to it."
                 % (info["project_repo"], info["store_repo"], info["store_name"]),
@@ -130,7 +144,7 @@ def build(project, vendor, env, scripts, hosts, info):
         {
             "kind": "first-session",
             "title": "First session",
-            "prompt": PROBE_PROMPT,
+            "prompt": probe_prompt(info["project_repo"]),
             "text": first_session_text(vendor, info),
         }
     )
@@ -182,7 +196,11 @@ def steps_markdown(runbook):
                     % (p["placeholder"], "`%s`" % p["secret"] if p["secret"] else "a value", p["instructions"])
                 )
         elif kind == "first-session":
-            lines.append('   Prompt: "%s"' % step["prompt"])
+            lines.append("   Prompt:")
+            lines.append("")
+            lines.append("   ```text")
+            lines.extend("   " + line for line in step["prompt"].splitlines())
+            lines.append("   ```")
         elif kind == "cleanup":
             for item in step["items"]:
                 lines.append("   - %s" % item)

@@ -29,7 +29,7 @@ from agent_mirror import PLUGIN_ROOT, __version__, machine
 from agent_mirror.config import config_agents, config_projects, load_user_config
 from agent_mirror.install import active_copies, memory_link_path
 from agent_mirror.links import is_junction, is_linklike, link_target, resolve_problem
-from agent_mirror.runtime import detect_runtime, parse_agents
+from agent_mirror.runtime import CLOUD_RUNTIMES, detect_runtime, parse_agents
 from agent_mirror.box.rules import include_prefix  # noqa: F401 (kept importable from here)
 from agent_mirror.sizes import iso_utc
 from agent_mirror.util import err, expand, norm, out, tilde, warn, within
@@ -37,6 +37,8 @@ from agent_mirror.util import err, expand, norm, out, tilde, warn, within
 SCHEMA = 1
 CASE_ORDER = ("reconcile", "first-setup", "legacy-folder-link", "join", "identical", "nothing", "linked", "external")
 NEEDS_CHOICE = ("reconcile", "first-setup")
+CLOUD_NO_BOX_ROLE = "a cloud machine has no box role to choose"
+CLOUD_LEFT_AS_IS = "a cloud machine leaves it as it is (choose on a developer machine)"
 KIND_ORDER = ("skills-folder", "instructions", "skill", "memory", "box")
 LEFTOVER_NAMES = {".DS_Store", "Thumbs.db", "desktop.ini"}
 LEFTOVER_SUFFIXES = ("~", ".swp", ".swo", ".swx", ".pyc", ".pyo")
@@ -367,10 +369,20 @@ class Plan:
             u["decision"] = default
             u["decided_by"] = "default" if default else None
         u["waiting"] = case in NEEDS_CHOICE and u["decision"] is None
+        if u["waiting"] and self.on_cloud():
+            # a throwaway cloud machine is never asked: it never adopts into the store and never pushes the
+            # shared tree of a box; a unit that would wait for a choice is left as it is (apply says so)
+            u["waiting"] = False
+            u["note"] = (u["note"] + "; " if u["note"] else "") + (
+                CLOUD_NO_BOX_ROLE if kind == "box" else CLOUD_LEFT_AS_IS
+            )
         self.units.append(u)
         if places is not None:
             self.places[uid] = places
         return u
+
+    def on_cloud(self):
+        return self.runtime in CLOUD_RUNTIMES
 
     def build(self):
         self.skills_folder_units()
@@ -506,6 +518,10 @@ class Plan:
             if case in ("first-setup", "reconcile") and len(content) > 1:
                 pick = self.newest(content)
                 notes.append("adopt takes the newest copy (%s)" % tilde(pick.path))
+            if case == "first-setup" and kind == "skill" and self.on_cloud():
+                # a skill only this cloud machine has came with the machine (the vendor installs some)
+                case = "external"
+                notes = ["found only on this cloud machine (provided by the vendor); left alone"]
         else:
             missing = [p for p in places if p.state in ("absent", "empty")]
             if not missing:

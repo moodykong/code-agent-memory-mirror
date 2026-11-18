@@ -190,3 +190,44 @@ def single_project(ctx, name=None, path=None):
         err("several projects found under %s: %s; pass --project NAME --project-path PATH" % (d.start, listed))
         raise SystemExit(2)
     return None, (d.unmatched[0] if d.mode == "repo" and d.unmatched else d.start)
+
+
+def box_project(ctx, name=None, path=None):
+    """(project, clone path) for the box commands.
+
+    As single_project, except for --project NAME without --project-path: a session that runs in a
+    folder above the clones (a cloud session with several repos) must find the clone of NAME, never
+    take the folder itself as the project. In order: the repo of the current folder, the repo of the
+    start folder (CLAUDE_PROJECT_DIR or the current folder), then the child folders (the scan that
+    session-start and probe use). When none of them is a clone of NAME, the old rule applies (the repo
+    of the start folder, else the folder). Several clones of NAME: exits with a message.
+    """
+    if not name or path:
+        return single_project(ctx, name, path)
+    store = ctx.store_or_none(quiet=True)
+    cwd = os.path.realpath(os.getcwd())
+    start = os.path.realpath(expand(ctx.plat.env.get("CLAUDE_PROJECT_DIR") or cwd))
+    tops = {}
+    for folder in (cwd, start):
+        if folder not in tops:
+            tops[folder] = git_toplevel(folder, timeout=5) if os.path.isdir(folder) else None
+        top = tops[folder]
+        if top and match_repo(ctx, store, top) == name:
+            return name, top
+    found = []
+    for folder in (start, cwd):
+        if not os.path.isdir(folder) or tops.get(folder):
+            continue
+        repos, _ = scan_child_repos(folder)
+        for repo in repos:
+            if repo not in found and match_repo(ctx, store, repo) == name:
+                found.append(repo)
+    if len(found) == 1:
+        return name, found[0]
+    if len(found) > 1:
+        err(
+            "several clones of %s found: %s; pass --project-path PATH to pick one"
+            % (name, ", ".join(tilde(p) for p in found))
+        )
+        raise SystemExit(2)
+    return single_project(ctx, name, path)

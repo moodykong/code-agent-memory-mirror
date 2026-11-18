@@ -9,18 +9,18 @@ cloud vendor's settings page or in your local environment.
 | Key | Type | Used by | What it does |
 | --- | --- | --- | --- |
 | `repo` | `"owner/name"` | `session-start`, `doctor`, `probe`, `cloud render` | Recognises a clone of this project by its `origin` URL (https or ssh, with or without `.git`, any letter case), so sessions find the project without flags, including sessions that start in a folder above several clones (see below). |
-| `python` | version text, e.g. `"3.11.9"` | `cloud render` | The setup scripts install this Python with `uv` (and install `uv` itself if missing). `probe --full` checks `uv python find`. |
+| `python` | version text, e.g. `"3.11.9"` | `cloud bootstrap`, `session-start` (cloud), `cloud render` | Installed with `uv` (and `uv` itself if missing) by `cloud bootstrap` when the cloud machine is set up, and again by the drift repair at session start when the value changes. `probe --full` checks `uv python find`. |
 | `dependency_sync` | one command | `session-start` (cloud), `probe --full` | Run in the project folder at cloud session start, e.g. `"uv sync --frozen"`. |
 | `memory_project` | text | `install`, `session-start`, `sync` | Folder name under `memory/` for this project (default: the project name). |
 | `allowed_hosts` | list of host names | `cloud render` | Hosts the cloud network must allow; joined with the hosts agent-mirror itself needs. |
 | `env_var_names` | list of names | `probe`, `cloud render`, `cloud secrets` | Environment variables the project needs. `probe` reports which are set (never values); `cloud render` writes the paste-ready name list. |
 | `secrets` | list of recipe entries | `cloud secrets`, `cloud render`, `cloud runbook`, `doctor` | How each value in `env_var_names` is produced on a machine, never the value itself. See "Secret recipes" below. |
-| `setup_commands` | list of shell lines | `cloud render` | Extra lines for the cloud setup scripts (for example installing a cloud CLI). Each runs in a subshell and may fail without stopping the script. agent-mirror never runs them itself. |
+| `setup_commands` | list of shell lines | `cloud bootstrap`, `session-start` (cloud), `cloud render` | Extra setup for a cloud machine (for example installing a cloud CLI). `cloud bootstrap` runs each one with `bash -c` as the machine's user (root on a cloud machine) when the machine is set up, and the drift repair at a cloud session start runs them all again when the list changes; they must be safe to run twice. Each may fail without stopping the others. They are read only from the store's default branch. See "Cloud setup and drift repair" below. |
 | `session_start_commands` | list of commands | `session-start` (cloud) | Run in the project folder after `dependency_sync` on a cloud runtime (for example a sign-in script kept in the store). |
 | `box` | object | `box`, `doctor`, `probe --full`, `cloud render` | Where bulk files go. See below. |
 | `probe` | object | `probe`, `probe --full` | Extra checks. See below. |
 | `pointers_file` | path relative to the store root | `session-start` | A file you keep in the store that says where the project's large data lives. `session-start` prints its path so the agent can read it. The format is yours. |
-| `companion_repos` | list of `{"repo", "ref", "dir"}` | `cloud render`, `session-start` (cloud) | Public repos a cloud session needs next to the project but that cannot be attached to the session. See "Companion repos" below. |
+| `companion_repos` | list of `{"repo", "ref", "dir"}` | `cloud bootstrap`, `session-start` (cloud), `cloud render` | Public repos a cloud session needs next to the project but that cannot be attached to the session. See "Companion repos" below. |
 
 ## Commands that agent-mirror runs (`dependency_sync`, `session_start_commands`, `probe.commands`)
 
@@ -32,7 +32,7 @@ agent-mirror never passes these to a shell, so they work the same on Linux, macO
 - `{store}` becomes the store folder and `{project_dir}` the project folder (after splitting, so
   Windows paths survive). A leading `~` is expanded.
 
-`setup_commands` are different: they are pasted into bash setup scripts as written.
+`setup_commands` are different: they are shell lines, run with `bash -c` (see "Cloud setup and drift repair").
 
 ## Secret recipes (`secrets`)
 
@@ -78,7 +78,7 @@ names that `env_var_names` does not list.
 ## Companion repos (`companion_repos`)
 
 A cloud session can only attach repos you own or were given access to. A public repo that the project
-expects next to its clone (a library checked out beside it, say) is cloned by the setup script instead:
+expects next to its clone (a library checked out beside it, say) is cloned when the machine is set up instead:
 
 ```json
 "companion_repos": [
@@ -86,16 +86,50 @@ expects next to its clone (a library checked out beside it, say) is cloned by th
 ]
 ```
 
-- `cloud render` adds a step to every setup script that clones each entry into `~/companions/<dir>` at
-  `ref` without any token: `git init`, `git fetch --depth 1 origin <ref>`, `git checkout FETCH_HEAD`. A
-  failure is noted and never stops the script. The repo's host is added to the allowed hosts.
+- `cloud bootstrap` (run by the setup script) clones each entry into `~/companions/<dir>` at `ref` without
+  any token: `git init`, `git fetch --depth 1 origin <ref>`, `git checkout FETCH_HEAD`. A failure is noted
+  and never stops the setup. The drift repair at a cloud session start does it again when the entries
+  change. `cloud render` adds the repo's host to the allowed hosts.
 - On a cloud runtime, `session-start` links `~/companions/<dir>` next to the project clone as `../<dir>`
   when nothing is there yet (a link made in Python, no shell). Something already at `../<dir>` is left
   alone.
 - `repo` must be a public `https://host/owner/name` URL (no credentials, port, query or other scheme).
   `ref` is a branch, tag or commit (letters, digits, `.`, `_`, `/`, `-`). `dir` is one folder name: no
-  path separators and not dots only. Anything else makes `cloud render` stop with a clear message, and
-  `session-start` skips that entry with a warning.
+  path separators and not dots only. Anything else makes `cloud render` stop with a clear message,
+  `cloud bootstrap` skip the project's setup steps, and `session-start` skip that entry with a warning.
+
+## Cloud setup and drift repair (`python`, `setup_commands`, `companion_repos`)
+
+The setup script pasted on the vendor page is a fixed bootstrap (see store-layout.md, "Cloud files"): it
+clones the store, checks agent-mirror out at the ref `store.json` pins, and runs `agent-mirror cloud
+bootstrap --project NAME --vendor claude|codex`. Changing these three keys never needs a new paste:
+
+- `cloud bootstrap` reads `projects/NAME/env.json` from the store's default branch as fetched
+  (`refs/remotes/origin/HEAD`, else the upstream of the checked-out branch) with `git show`, never from the
+  working tree (a detached checkout without `origin/HEAD`, as a vendor's own checkout of the store may be,
+  is read at its checked-out commit, as the setup script reads `tool.ref`), and refuses a checkout on an
+  `inbox/*` branch. It runs, in this order, the companion
+  clones, the `uv python install` of `python`, and each of the `setup_commands` with `bash -c` in the
+  folder the setup script ran in. STORE, TOOL, AM and NOTE are set for the commands, as the setup scripts
+  of 0.5.1 set them. Each step's name, time and exit status go to `~/agent_setup_probe.txt`; the output
+  goes to the vendor's setup log. Then it runs `init-store --adopt`, `install` and (Claude) `hooks
+  install`, and writes a stamp on the machine (`<config>/bootstrap-stamp.json`, never in the store): a
+  hash of these three keys per project and the agent-mirror commit.
+- At every cloud session start, after the store pull and the move of agent-mirror to the pinned ref,
+  `session-start` compares the stamp with the default branch. For a project whose keys changed it runs
+  the same steps again (drift repair), with their output kept out of the session, within
+  `--repair-timeout` seconds in all (default 900; a command still running then is stopped with
+  everything it started). A failed step is reported and the session goes on; when the time ran out, the
+  old record stays so that the next start tries again. A project whose steps could not run at setup
+  (env.json missing or invalid there, or an inbox checkout) is recorded without inputs, so its steps run
+  at the first session start after the store is fixed.
+- Each new session starts from the vendor's cached machine, which still holds the stamp of the setup,
+  so the repair repeats at every session start until the vendor rebuilds the machine. To make it rebuild,
+  raise the number on the `# revision:` line of the pasted script and save.
+- So `setup_commands` must be safe to run twice (`command -v jq >/dev/null || apt-get install -y jq`).
+  They run as root on a cloud machine. They come only from the default branch, which a cloud session never
+  writes: a developer machine's sync applies only `memory/` from an inbox branch and holds everything
+  else, `projects/*/env.json` and `store.json` included, for `agent-mirror review`.
 
 ## Sessions above several clones
 
@@ -120,6 +154,13 @@ one project matched, the session folder's memory folder is linked to that projec
 several projects matched, `session-start` prints each project's memory index path so the agent can read
 them; how Claude picks its memory folder in that case is UNVERIFIED. Commands that work on one project
 (`box`, `install --project-path`) stop with "several projects found" and ask for `--project`.
+
+The `box` commands with `--project NAME` and no `--project-path` look for the clone of NAME: the repo of
+the current folder, then the repo of the session folder, then the clones in the child folders (the scan
+above). So `box send FILE --project NAME` from the folder above the clones writes into the same session
+namespace as the other sends of the session, with the clone's git branch recorded. Several clones of NAME
+stop with a message that asks for `--project-path`. When none is found, the current repo or folder is
+the project folder, as before.
 
 ## `box`
 
@@ -346,6 +387,14 @@ Every session writes its own namespace on the sessions side:
   `box send --new-session`, or when the remembered one is older than 24 hours.
 - `box send --label TEXT` gives the session a short label on first use (letters, digits, `-`, `_`, `.`;
   up to 60). A later different label is ignored with a note.
+- `box send PATH` takes PATH relative to the project folder first. When nothing is there, PATH is taken
+  relative to the current folder (or as an absolute path): a file or folder inside the project keeps its
+  path in the project, and a FILE outside the project is sent under its file name (`box send
+  ../probe_output.txt` sends `probe_output.txt`). Refused, with exit code 2 and one line that says what
+  to do: a folder outside the project (copy it in first), a name that exists both in the project folder
+  and in the current folder as different things (pass an absolute path), env files, the manifest name
+  `_session.json`, paths the `box.exclude` rules match, and `--archive` with a file outside. A path that
+  exists nowhere exits with 1. The name in the namespace never holds `..`.
 - The manifest is updated after every successful send: read, merge, write, read back (and tried again on
   a mismatch, like `_owners.json`). Its shape:
 

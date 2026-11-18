@@ -146,6 +146,72 @@ class SessionsMixin:
         rc, out = self.box("send", "_session.json")
         self.assertEqual(rc, 2, out)
 
+    def test_send_from_the_folder_above_the_clone_and_files_outside_it(self):
+        """A cloud session starts in the folder above the clones (0.5.1 made a second namespace there)."""
+        above = os.path.dirname(self.project)
+        env = dict(self.tool_env(), AGENT_RUNTIME="claude-cloud")
+
+        def send(*args, cwd=above):
+            return self.run_tool("box", "send", *args, cwd=cwd, env=env)
+
+        write(self.p("results", "r1.csv"), "1\n")
+        # what probe --full does: the clone it discovered, by --project and --project-path
+        rc, out = self.run_on(self.project, "box", "send", "results/r1.csv", AGENT_RUNTIME="claude-cloud")
+        self.assertEqual(rc, 0, out)
+        sid = self.local_session()["id"]
+        # --project without --project-path, from the folder above: the clone of demo, the same namespace
+        write(os.path.join(above, "probe_output.txt"), "probe\n")
+        rc, out = send("probe_output.txt", "--project", "demo", "--label", "first-probe")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("is outside the project folder: it is sent under its file name, as probe_output.txt", out)
+        self.assertEqual(self.namespaces(), [sid])
+        self.assertFalse(os.path.exists(os.path.join(above, ".agent-mirror")))
+        self.assertEqual(read(self.sessions_path(sid, "probe_output.txt")), "probe\n")
+        m = self.manifest(sid)
+        self.assertEqual(m["git"], {"branch": "work", "commit": self.commit})  # the branch is recorded
+        self.assertEqual(m["label"], "first-probe")
+        # no --project: the one clone the scan finds (as session-start and probe find it)
+        write(os.path.join(above, "notes.txt"), "notes\n")
+        rc, out = send("notes.txt")
+        self.assertEqual(rc, 0, out)
+        # from inside the clone, a file one folder up: sent under its file name
+        write(os.path.join(above, "probe2.txt"), "probe2\n")
+        rc, out = send("../probe2.txt", "--project", "demo", "--label", "second-probe", cwd=self.project)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.namespaces(), [sid])
+        self.assertEqual(read(self.sessions_path(sid, "probe2.txt")), "probe2\n")
+        # a path from the current folder that lies inside the clone keeps its path there
+        rc, out = send(os.path.join("demo", "results", "r1.csv"))
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("outside the project folder", out)
+        paths = [f["path"] for f in self.manifest(sid)["files"]]
+        self.assertEqual(sorted(paths), ["notes.txt", "probe2.txt", "probe_output.txt", "results/r1.csv"])
+        # refusals: exit non-zero with one line that says what to do, and nothing uploaded
+        os.makedirs(os.path.join(above, "outdir"))
+        write(os.path.join(above, "outdir", "x.txt"), "x\n")
+        write(os.path.join(above, "secrets.env"), "TOKEN=x\n")
+        write(os.path.join(above, "README.md"), "another readme\n")  # the clone has one too
+        for args, code, words in (
+            (("../outdir",), 2, "copy it into the project folder"),
+            (("../secrets.env",), 2, "env files hold secrets"),
+            (("../missing.txt",), 1, "pass the path of an existing file"),
+            (("--archive", "../probe2.txt"), 2, "send it without --archive"),
+        ):
+            with self.subTest(args=args):
+                rc, out = send(*args, "--project", "demo", cwd=self.project)
+                self.assertEqual(rc, code, out)
+                errors = [ln for ln in out.splitlines() if ln.startswith("error:")]
+                self.assertEqual(len(errors), 1, out)
+                self.assertIn(words, errors[0])
+        rc, out = send("README.md", "--project", "demo")
+        self.assertEqual(rc, 2, out)
+        self.assertIn("names two different things", out)
+        self.assertEqual(self.namespaces(), [sid])
+        self.assertEqual(
+            sorted(f["path"] for f in self.manifest(sid)["files"]),
+            ["notes.txt", "probe2.txt", "probe_output.txt", "results/r1.csv"],
+        )
+
     def test_sessions_list_fetch_and_receive(self):
         a, b = self.checkout("cloud-a"), self.checkout("cloud-b")
         write(os.path.join(a, "results", "exp-a.csv"), "a\n")

@@ -8,10 +8,10 @@ import os
 import unittest
 
 from helpers import setUpModule  # noqa: F401 (the sandbox guard runs first)
-from helpers import SHARED_BODY, STORE_INDEX, ToolTest, read, write
+from helpers import SHARED_BODY, STORE_INDEX, SYMLINKS, ToolTest, read, write
 
 
-class InboxTest(ToolTest):
+class InboxBase(ToolTest):
     def setUp(self):
         super().setUp()
         meta = json.loads(read(self.s("store.json")))
@@ -40,6 +40,8 @@ class InboxTest(ToolTest):
     def remote_main(self):
         return self.git("--git-dir", self.origin, "rev-parse", "refs/heads/main", cwd=self.base)
 
+
+class InboxTest(InboxBase):
     def test_cloud_sync_pushes_to_inbox_and_never_to_main(self):
         main_before = self.remote_main()
         cloud = self.cloud_clone()
@@ -197,6 +199,105 @@ class InboxTest(ToolTest):
         self.assertEqual(rc, 0, out)
         self.assertTrue(os.path.isfile(os.path.join(cloud, "memory", "demo", "later.md")))
         self.assertTrue(os.path.isfile(os.path.join(cloud, "memory", "demo", "mine.md")))
+
+
+class CloudSetupInputsTest(InboxBase):
+    """Cloud setup (`cloud bootstrap`, drift repair) runs env.json, projects/*/cloud and store.json from the
+    default branch as root, so a developer sync must never apply them from an inbox branch, by any path."""
+
+    WATCHED = ("projects/demo/env.json", "projects/demo/cloud/claude/setup.sh", "store.json")
+
+    def push_branch(self, cloud, name):
+        self.git("add", "-A", cwd=cloud)
+        self.git("commit", "-q", "-m", "from a cloud session", cwd=cloud)
+        self.git("push", "-q", "origin", "HEAD:refs/heads/inbox/" + name, cwd=cloud)
+
+    def watched(self):
+        """The watched paths on the developer clone and on the remote main branch."""
+        here = dict(
+            (p, read(self.s(*p.split("/"))) if os.path.isfile(self.s(*p.split("/"))) else None) for p in self.WATCHED
+        )
+        listed = self.git("--git-dir", self.origin, "ls-tree", "-r", "--name-only", "main", cwd=self.base).splitlines()
+        there = dict(
+            (p, self.git("--git-dir", self.origin, "show", "main:" + p, cwd=self.base) if p in listed else None)
+            for p in self.WATCHED
+        )
+        return here, there
+
+    def test_setup_inputs_on_an_inbox_branch_are_held(self):
+        before = self.watched()
+        main_before = self.remote_main()
+        cloud = self.cloud_clone()
+        env = json.loads(read(os.path.join(cloud, "projects", "demo", "env.json")))
+        env["setup_commands"] = ["echo planted"]
+        write(os.path.join(cloud, "projects", "demo", "env.json"), json.dumps(env))
+        write(os.path.join(cloud, "projects", "demo", "cloud", "claude", "setup.sh"), "#!/bin/bash\necho planted\n")
+        meta = json.loads(read(os.path.join(cloud, "store.json")))
+        meta["tool"] = {"repo": "https://github.com/example-org/other-tool", "ref": "planted"}
+        write(os.path.join(cloud, "store.json"), json.dumps(meta))
+        write(os.path.join(cloud, "memory", "demo", "note.md"), "a cloud note\n")
+        self.push_branch(cloud, "claude-cloud-inputs")
+        # a rename of a setup input into memory/ is a deletion outside memory/ (held) and a new memory file
+        cloud2 = self.cloud_clone()
+        os.makedirs(os.path.join(cloud2, "memory", "demo", "moved"))
+        self.git("mv", "projects/demo/env.json", "memory/demo/moved/env.json", cwd=cloud2)
+        self.push_branch(cloud2, "claude-cloud-rename")
+        rc, out = self.sync(self.dev, "local")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.watched(), before)  # on this clone and on the remote main branch
+        self.assertEqual(read(self.s("memory", "demo", "note.md")), "a cloud note\n")  # memory is applied
+        self.assertIn(
+            "held for review (not applied): projects/demo/cloud/claude/setup.sh, projects/demo/env.json, store.json",
+            out,
+        )
+        self.assertIn("claude-cloud-rename: held for review (not applied): projects/demo/env.json", out)
+        self.assertNotEqual(self.remote_main(), main_before)  # the memory changes were pushed
+        self.assertEqual(len(self.inbox_refs()), 2)  # both kept: they hold changes for review
+
+    def test_memory_path_rule(self):
+        from agent_mirror.inbox import is_memory_path
+
+        for path in ("memory/demo/a.md", "memory/demo/sub/MEMORY.md"):
+            self.assertTrue(is_memory_path(path), path)
+        for path in (
+            "memory",
+            "memory/",
+            "Memory/demo/a.md",
+            "memory/../projects/demo/env.json",
+            "memory/demo/../../store.json",
+            "memory/./demo/a.md",
+            "memory//demo/a.md",
+            "memory/demo\\..\\..\\store.json",
+            "memory/c:/x.md",
+            "projects/demo/env.json",
+            "projects/demo/cloud/claude/setup.sh",
+            "store.json",
+            "./memory/demo/a.md",
+        ):
+            self.assertFalse(is_memory_path(path), path)
+
+    @unittest.skipUnless(SYMLINKS, "needs symlinks")
+    def test_links_never_carry_a_memory_change_outside_memory(self):
+        env_before = read(self.s("projects", "demo", "env.json"))
+        # a link committed on the branch becomes a plain file holding the link text, never a link
+        cloud = self.cloud_clone()
+        os.symlink(os.path.join("..", "..", "projects"), os.path.join(cloud, "memory", "demo", "planted"))
+        self.push_branch(cloud, "claude-cloud-link")
+        rc, out = self.sync(self.dev, "local")
+        self.assertEqual(rc, 0, out)
+        planted = self.s("memory", "demo", "planted")
+        self.assertFalse(os.path.islink(planted))
+        self.assertEqual(read(self.s("projects", "demo", "env.json")), env_before)
+        # a link in this machine's working tree: a memory path through it resolves outside memory/, blocked
+        os.symlink(os.path.join("..", "..", "projects", "demo"), self.s("memory", "demo", "through"))
+        cloud = self.cloud_clone()
+        write(os.path.join(cloud, "memory", "demo", "through", "env.json"), '{"setup_commands": ["planted"]}\n')
+        self.push_branch(cloud, "claude-cloud-through")
+        rc, out = self.sync(self.dev, "local")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("resolves outside memory/", out)
+        self.assertEqual(read(self.s("projects", "demo", "env.json")), env_before)
+        self.assertIn("refs/heads/inbox/claude-cloud-through", self.inbox_refs())
 
 
 if __name__ == "__main__":

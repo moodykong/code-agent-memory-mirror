@@ -80,9 +80,9 @@ For each system the user allowed:
 
 ### Phase 6: Cloud environments
 
-- `agent-mirror cloud render --project <name>` writes the paste-ready setup script, host list and variable names into the store.
+- `agent-mirror cloud render --project <name>` writes the paste-ready setup script, host list and variable names into the store. The setup script is a fixed bootstrap: pasted once, it reads the project settings from the store's default branch at setup and at every session start.
 - Walk the user through the vendor page one field at a time. Put long text on the clipboard for them and confirm what the clipboard holds before they paste.
-- First session: `agent-mirror probe --full`. Read the output against the checklist, fix what fails, repeat.
+- First session: the runbook's prompt, which writes `probe --full` output inside the project clone and sends it to the box. Read it against the checklist, fix what fails, repeat.
 
 ### Phase 7: Acceptance and handoff
 

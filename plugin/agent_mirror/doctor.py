@@ -11,7 +11,7 @@ from agent_mirror.inbox import held_summary, upstream_parts
 from agent_mirror.install import Installer, link_state, memory_link_path
 from agent_mirror.links import describe
 from agent_mirror.projects import discover_projects
-from agent_mirror.runtime import AGENT_NAMES, detect_runtime
+from agent_mirror.runtime import AGENT_NAMES, CLOUD_RUNTIMES, detect_runtime
 from agent_mirror.util import expand, git, is_git_toplevel, out, read_text, tilde, upstream
 
 
@@ -26,6 +26,39 @@ def claude_md_state(store):
 
 
 BOX_TOOLS = {"az": "azure-blob", "rclone": "rclone"}
+
+
+def present_projects(ctx, d, runtime):
+    """Projects whose box tools this machine must have: on a cloud runtime the projects of this session,
+    on a developer machine also every configured project whose folder exists here."""
+    names = set(n for n, _ in d.matched)
+    if runtime not in CLOUD_RUNTIMES:
+        for name, paths in config_projects(ctx.config):
+            if any(os.path.isdir(expand(p)) for p in paths):
+                names.add(name)
+    return names
+
+
+def tool_lines(tool, path, users, here, runtime):
+    """doctor's lines for one tool. users: projects whose box uses it (None: not a box tool)."""
+    if path:
+        return ["  %-7s %s" % ("ok", "%s (%s)" % (tool, path))]
+    if users is None:
+        return ["  %-7s %s" % ("MISSING", tool)]
+    needed = [n for n in users if n in here]
+    if needed:
+        return [
+            "  %-7s %s (needed by the box of %s)" % ("MISSING", tool, ", ".join(needed)),
+            "    PROBLEM  %s is not installed, and the %s box of %s needs it"
+            % (tool, BOX_TOOLS[tool], ", ".join(needed)),
+        ]
+    if users:
+        where = "in this session" if runtime in CLOUD_RUNTIMES else "checked out on this machine"
+        return [
+            "  %-7s %s not installed (only the box of %s uses %s, and %s not %s)"
+            % ("-", tool, ", ".join(users), BOX_TOOLS[tool], "it is" if len(users) == 1 else "they are", where)
+        ]
+    return ["  %-7s %s" % ("-", tool + " not needed (no project's box uses %s)" % BOX_TOOLS[tool])]
 
 
 def projects_by_store(store, ctx, d):
@@ -156,21 +189,11 @@ def cmd_doctor(args, ctx):
     for name in names:
         backend = str((store.load_env(name).get("box") or {}).get("backend") or "none").strip().lower()
         backends.setdefault(backend, []).append(name)
+    here = present_projects(ctx, d, runtime)
     for tool in ("git", "uv", "az", "rclone"):
-        path = shutil.which(tool)
         users = backends.get(BOX_TOOLS.get(tool), []) if tool in BOX_TOOLS else None
-        if path:
-            out("  %-7s %s" % ("ok", "%s (%s)" % (tool, path)))
-        elif users is None:
-            out("  %-7s %s" % ("MISSING", tool))
-        elif users:
-            out("  %-7s %s (needed by the box of %s)" % ("MISSING", tool, ", ".join(users)))
-            out(
-                "    PROBLEM  %s is not installed, and the %s box of %s needs it"
-                % (tool, BOX_TOOLS[tool], ", ".join(users))
-            )
-        else:
-            out("  %-7s %s (no project's box uses %s)" % ("-", tool + " not needed", BOX_TOOLS[tool]))
+        for line in tool_lines(tool, shutil.which(tool), users, here, runtime):
+            out(line)
     out("box:")
     if not names:
         out("  (no projects/<name>/env.json in the store)")

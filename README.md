@@ -68,7 +68,9 @@ Windows (UNVERIFIED): clone the repo, add `...\code-agent-memory-mirror\plugin\b
 
 Cloud sessions: write `projects/my-project/env.json` in the store (start from
 `projects/_example/env.json`), run `agent-mirror cloud render --project my-project`, and follow the
-README it writes under `projects/my-project/cloud/`.
+README it writes under `projects/my-project/cloud/`. The setup script is pasted once per environment
+(with a read-only store token); later changes to env.json or to the pinned agent-mirror version reach the
+cloud machine at the next session start. Select the store repo next to the project in every session.
 
 The skill: in Claude Code, `/plugin marketplace add moodykong/code-agent-memory-mirror`, then
 `/plugin install code-agent-memory-mirror@code-agent-memory-mirror`. The Codex manifest is
@@ -110,16 +112,16 @@ on the vendor's settings page.
 | `machine [--name NAME]` | show this machine's id, name and recorded choices, or set its name |
 | `uninstall` | remove the links into the store and restore the backups |
 | `doctor` | runtime, config, store state, every expected link, hooks, tools, box settings |
-| `session-start` | pull the store; on a cloud runtime also update agent-mirror to the pinned ref, dependency sync, project start commands, install and companion repo links; print the memory index path |
+| `session-start [--repair-timeout 900]` | pull the store; on a cloud runtime also update agent-mirror to the pinned ref, repair setup drift (run the setup steps again when the store changed them), dependency sync, project start commands, install and companion repo links; print the memory index path; record each step's time and status in `<cache>/session-start.jsonl` |
 | `sync [--message MSG]` | adopt stray memory files (for projects this machine linked), secret scan, commit, `pull --rebase`, push (never force) |
-| `probe [--tcp HOST:PORT] [--url URL]`, `probe --full` | reachability and machine checks; `--full` is the long first-session report |
+| `probe [--tcp HOST:PORT] [--url URL]`, `probe --full` | reachability and machine checks, and the last session-start's step times; `--full` is the long first-session report |
 | `hook memory-write` | hook handler: runs `sync` when the file just written is a store memory, skill or instruction file |
 | `hooks install\|uninstall\|status [--agent claude]` | add or remove the three Claude Code hooks in its user settings, keeping everything else |
 | `timer install\|uninstall\|status [--minutes 30]` | periodic `sync`: systemd user timer, launchd agent or Windows scheduled task |
 | `box push [--only FOLDER]... [--take-over [FOLDER]]... [--delete]` | upload the box folders this machine owns or claims; folders another machine owns are skipped with a note (same or different here) |
 | `box owners [--json]`, `box release FOLDER...` | list every folder of the box with its owning machine and how the local copy compares (read-only); give up folders this machine owns (no data deleted) |
 | `box index`, `box fetch PATH [--all]` | list the shared tree into the store (with owners and a session summary), fetch on demand; Azure blob storage or any rclone remote |
-| `box send PATH [--archive] [--label TEXT] [--new-session]` | upload results into this session's own namespace on the sessions side, recorded in its manifest |
+| `box send PATH [--archive] [--label TEXT] [--new-session]` | upload results into this session's own namespace on the sessions side, recorded in its manifest; PATH is relative to the project folder, else to the current folder, and a file outside the project is sent under its file name |
 | `box sessions [--json] [--limit N]`, `box fetch --session ID [PATH] [--into DIR]` | list what earlier sessions produced, newest first; download a session's files (by id, unique start of the id, or label) into `_sessions/<id>/`; any runtime |
 | `box promote --session ID PATH [--as FOLDER]`, `box prune [--older-than DAYS] [--session ID]... [--keep-promoted] [--yes]` | developer machines: copy a session's file or folder into the shared tree, owned by this machine; delete old session namespaces (lists first, needs `--yes`) |
 | `box candidates [--json] [--min-bytes N]` | list the project's untracked and ignored entries with sizes and a kind guess, to choose what goes in the box; read-only |
@@ -127,7 +129,8 @@ on the vendor's settings page.
 | `box receive [--into DIR]` | download every session not received yet, one folder per session (developer machine) |
 | `box mount\|unmount [--cache-max-size 10G]` | rclone: mount the shared side read-only with a capped cache (needs FUSE) |
 | `box rclone-env --remote NAME [--out FILE]` | turn a local rclone remote into `RCLONE_CONFIG_*` variables for a cloud machine |
-| `cloud render --project NAME [--vendor claude\|codex\|all]` | write paste-ready setup scripts, host list, variable names, `runbook.json` and steps for Claude cloud and Codex cloud into the store |
+| `cloud render --project NAME [--vendor claude\|codex\|all]` | write paste-ready setup scripts (fixed bootstraps: paste once per environment), host list, variable names, `runbook.json` and steps for Claude cloud and Codex cloud into the store |
+| `cloud bootstrap --project NAME --vendor claude\|codex [--note FILE]` | run by the setup script on a cloud machine: the project's companion repos, Python and `setup_commands` from env.json on the store's default branch, then links and hooks; records a stamp for the drift repair at session start |
 | `cloud secrets --project NAME [--vendor claude\|codex] (--check \| --out FILE [--replace])` | produce the environment's values on this machine from the recipes in env.json; never prints a value |
 | `cloud runbook --project NAME [--vendor V] [--json]` | print the setup steps for a person, or the runbook JSON |
 | `review [list \| show BRANCH \| accept BRANCH [--paths ...] \| discard BRANCH]` | handle inbox branches pushed by cloud sessions (developer machines only) |
@@ -211,8 +214,8 @@ owners" in [plugin/docs/reconciliation.md](plugin/docs/reconciliation.md).
   credentials will follow. The cost: memory written in one cloud session reaches other machines only after
   a developer machine syncs. The store token in a cloud setup script only needs read access; the inbox
   branch is pushed through the vendor's GitHub access for the repos selected in the session.
-- Project config names where each secret comes from (fixed recipe types only; no command from the store is
-  ever run), never the value. `cloud secrets --out` and `box rclone-env --out` write owner-only files and
+- Project config names where each secret comes from (fixed recipe types only; a recipe never runs a
+  command from the store), never the value. `cloud secrets --out` and `box rclone-env --out` write owner-only files and
   refuse paths inside the store or any git work tree.
 - The box never deletes remote files unless you pass `--delete` (shared tree) or `box prune --yes`
   (session namespaces only), never overwrites local files on a local runtime, refuses `box push`,
@@ -224,6 +227,10 @@ owners" in [plugin/docs/reconciliation.md](plugin/docs/reconciliation.md).
 - `--dry-run` shows the exact commands, with secret values replaced by `***`.
 - `cloud render` writes a placeholder (`<STORE_REPO_TOKEN>`) where a token goes and drops any
   credentials found in the store's remote URL.
+- On a cloud machine, `cloud bootstrap` and the drift repair run the project's `setup_commands` as root.
+  They read env.json and store.json only from the store's default branch (with `git show`, never the
+  working tree) and refuse a checkout on an inbox branch; a developer sync never applies those files from
+  an inbox branch. The step log and the setup note hold step names, times and exit status, never output.
 
 ## Platform status
 

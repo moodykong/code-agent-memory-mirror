@@ -1,11 +1,14 @@
 """Cloud session-start: bring agent-mirror's own clone to the ref pinned in the store's store.json.
 
 Only on a cloud runtime, only when the tool folder is a git clone whose origin matches store.json's
-tool.repo, and never failing the session. `git fetch --depth 1 origin <ref>` (without --depth for a
-clone that is not shallow, so a full clone stays full), then a checkout of FETCH_HEAD. In a test
-sandbox it never touches a clone outside the sandbox. A running program does not change under its own feet, so when the commit changed the
-session-start command is run again once with the new code; the AGENT_MIRROR_SELF_UPDATED marker in
-its environment stops a loop.
+tool.repo, and never failing the session. The ref is read from store.json on the store's default
+branch (bootstrap.pinned_tool), never from an inbox branch. `git fetch --depth 1 origin <ref>`
+(without --depth for a clone that is not shallow, so a full clone stays full), then a checkout of
+FETCH_HEAD; a ref that is the full commit already checked out needs no fetch. In a test sandbox it
+never touches a clone outside the sandbox. A running program does not change under its own feet, so
+when the commit changed the session-start command is run again once with the new code; the
+AGENT_MIRROR_SELF_UPDATED marker in its environment stops a loop, and the step timings so far go
+along (steplog.py), so one session start stays one timing record.
 """
 
 import os
@@ -45,8 +48,11 @@ def tool_folder():
     return os.path.dirname(PLUGIN_ROOT)
 
 
-def self_update(store, timeout, dry_run, argv=None, env=None):
-    """None to go on with this process, or the exit code of the re-run with the new code."""
+def self_update(store, timeout, dry_run, argv=None, env=None, handoff=None):
+    """None to go on with this process, or the exit code of the re-run with the new code.
+
+    handoff: a function returning extra environment variables for the re-run (the step timings).
+    """
     env = os.environ if env is None else env
     if env.get(MARKER):
         rc, head, _ = git(tool_folder(), ["rev-parse", "--short", "HEAD"], timeout)
@@ -58,15 +64,20 @@ def self_update(store, timeout, dry_run, argv=None, env=None):
         out("agent-mirror: test sandbox: no self-update of a tool clone outside %s" % sandbox)
         return None
     try:
-        return _update(store, timeout, dry_run, argv, env)
+        return _update(store, timeout, dry_run, argv, env, handoff)
     except Exception as exc:  # noqa: BLE001 (never fail the session)
         warn("agent-mirror self-update skipped: %s" % short(exc))
         return None
 
 
-def _update(store, timeout, dry_run, argv, env):
+def _update(store, timeout, dry_run, argv, env, handoff=None):
+    from agent_mirror.bootstrap import pinned_tool
+
     tool = tool_folder()
-    ref, repo = store.tool_ref(), store.tool_repo()
+    ref, repo, why = pinned_tool(store, timeout)
+    if ref is None:
+        warn("agent-mirror self-update skipped: %s" % why)
+        return None
     rc, top, _ = git(tool, ["rev-parse", "--show-toplevel"], timeout)
     if rc != 0 or os.path.normcase(os.path.realpath(top.strip())) != os.path.normcase(os.path.realpath(tool)):
         out("agent-mirror: %s is not a git clone; no self-update" % tool)
@@ -77,6 +88,9 @@ def _update(store, timeout, dry_run, argv, env):
         return None
     rc, before, _ = git(tool, ["rev-parse", "HEAD"], timeout)
     before = before.strip() if rc == 0 else ""
+    if before and ref.lower() == before.lower():
+        out("agent-mirror: tool at %s (ref %s, already current)" % (before[:12], ref))
+        return None
     if dry_run:
         out(
             "would run: git -C %s fetch origin %s (--depth 1 for a shallow clone), then check out FETCH_HEAD"
@@ -112,6 +126,8 @@ def _update(store, timeout, dry_run, argv, env):
     )
     child = dict(env)
     child[MARKER] = "1"
+    if handoff is not None:
+        child.update(handoff())
     cmd = [sys.executable, os.path.join(PLUGIN_ROOT, "bin", "agent-mirror")] + list(
         argv if argv is not None else sys.argv[1:]
     )

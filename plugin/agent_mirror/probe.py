@@ -157,6 +157,10 @@ def merged(found, key, sub=None):
     return values
 
 
+def box_backend(env):
+    return str((env.get("box") or {}).get("backend") or "none").strip().lower()
+
+
 def env_var_report(found):
     names = [str(n) for n in merged(found, "env_var_names")]
     return [n for n in names if os.environ.get(n)], [n for n in names if not os.environ.get(n)]
@@ -208,6 +212,10 @@ def quick_probe(args, ctx):
     out("projects: %s" % (", ".join(d.names()) or "none matched"))
     out("env vars set (names only): %s" % (", ".join(is_set) or "none"))
     out("env vars not set: %s" % (", ".join(not_set) or "none"))
+    from agent_mirror.steplog import last_record, record_lines
+
+    for line in record_lines(last_record(plat)):
+        out(line)
     out("probe: %d pass, %d fail" % (passed, failed))
     return 0
 
@@ -291,6 +299,11 @@ def full_probe(args, ctx):
                 out("cannot read: %s" % exc)
     if not seen:
         out("no agent_setup_probe.txt (no cloud setup script ran here)")
+    from agent_mirror.bootstrap import stamp_lines
+    from agent_mirror.steplog import last_record, record_lines
+
+    for line in stamp_lines(plat) + record_lines(last_record(plat)):
+        out(line)
     if store:
         rc, log, _ = git(store.root, ["log", "--oneline", "-1"], 10)
         out("store: %s  %s" % (store.root, log.strip() if rc == 0 else "(not a git clone)"))
@@ -306,8 +319,17 @@ def full_probe(args, ctx):
 
     section("3 tools")
     out("%-8s %s (%s)" % ("this", sys.version.split()[0], sys.executable))
+    box_tools = {"az": "azure-blob", "rclone": "rclone"}
     for tool in TOOLS:
-        out("%-8s %s" % (tool, tool_version([tool, "--version"])))
+        version = tool_version([tool, "--version"])
+        if tool in box_tools and version == "MISSING":
+            users = [n for n, _, env in found if box_backend(env) == box_tools[tool]]
+            version = (
+                "MISSING (needed by the box of %s)" % ", ".join(users)
+                if users
+                else "not installed (no project in this session has a %s box)" % box_tools[tool]
+            )
+        out("%-8s %s" % (tool, version))
     ok, reason = fuse_status()
     out("%-8s %s (%s)" % ("mount", "looks possible" if ok else "not possible", reason))
     for name, path, env in found:

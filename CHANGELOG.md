@@ -1,5 +1,62 @@
 # Changelog
 
+## 0.5.2
+
+Fixes from real Claude Code on the web probe sessions.
+
+- **The setup script is a fixed bootstrap.** `cloud render` now writes setup scripts whose only
+  project-specific text is the project name, the store URL, the agent-mirror URL and the runtime marker.
+  They clone the store (a read-only token is enough), check agent-mirror out at the ref that `store.json`
+  on the store's default branch pins, and run the new `agent-mirror cloud bootstrap --project NAME --vendor
+  claude|codex`. That command reads `projects/<name>/env.json` from the default branch (with `git show`,
+  never from the working tree, never from an `inbox/*` branch) and does what the setup scripts of 0.5.1 did
+  themselves: companion repos, Python through uv, the `setup_commands` (each timed into
+  `~/agent_setup_probe.txt`; STORE, TOOL, AM and NOTE are set for them as before), then `init-store
+  --adopt`, `install` and (Claude) `hooks install`. It writes a stamp on the machine,
+  `<config>/bootstrap-stamp.json` (never in the store): a hash of the setup inputs and the agent-mirror
+  commit. Paste the script once per environment; a project settings change needs no new paste. The
+  `# revision: 1` line is the manual fallback: raise it to make the vendor rebuild its cached machine.
+  When the store pins an agent-mirror without `cloud bootstrap`, the script falls back to the 0.5.1 steps
+  (links and hooks) and `cloud render` warns.
+- **Drift repair at cloud session start.** After the store pull and the self-update to the pinned ref,
+  `session-start` on a cloud runtime compares the stamp with the default branch and runs the setup steps
+  again for a project whose `python`, `setup_commands` or `companion_repos` changed. It is bounded by the
+  new `session-start --repair-timeout` (default 900 s; a command it has to stop is killed with everything
+  it started), keeps the programs' output out of the session, never fails the session, and keeps the old
+  record when the time ran out so that the next start tries again. A project that `cloud bootstrap` could
+  not set up (env.json missing or invalid) is set up at the first session start after the store is fixed.
+  A detached store checkout without `origin/HEAD` (a vendor's own checkout may be one) is read at its
+  checked-out commit, as the setup script reads the tool ref there. Each new session starts from the
+  vendor's cached machine, so the repair repeats at every session start until the machine is rebuilt.
+  The self-update reads the pinned ref from the default branch too (from the working tree only when the
+  default branch cannot be told, as before) and refuses a store checkout on an `inbox/*` branch.
+- **Session-start timing.** Each step (store pull, tool update, drift check and each repaired setup step,
+  each dependency sync, each `session_start_commands` entry, linking) is recorded with start, end, seconds
+  and status in `<cache>/session-start.jsonl` (the newest 50 runs; names and times only, never output). A
+  cloud session start prints a one-line summary; `probe` and `probe --full` print the last record.
+- **`box send` from the folder above the clones.** A cloud session starts in the folder that holds the
+  project clone and the store clone. `box send FILE --project NAME` there took that folder as the project
+  folder, so it started a second session namespace with no git branch recorded. The box commands now find
+  the clone of NAME (the current repo, then the clones in the child folders, as session-start does). A path
+  is taken relative to the project folder first, then relative to the current folder: inside the clone it
+  keeps its path, and a file outside it (`../probe2.txt`, which 0.5.1 refused with "without '..'") is sent
+  under its file name. A folder outside, a name that exists both in the clone and in the current folder,
+  env files, the manifest name and excluded paths are refused with one line that says what to do.
+- **`doctor` and `probe` on a cloud session** require the box tools only of the projects in the session (on
+  a developer machine: of the projects found or configured with a folder here). A tool only another
+  project's box needs is an info line, not MISSING or a PROBLEM.
+- **Nothing waits for a choice on a cloud machine.** A skill only the cloud machine has (the vendor
+  preinstalls some, such as a session-start hook skill) is `external`; a box unit has no role to choose
+  there; any other unit that would wait is left as it is and `apply` says so. Developer machines are
+  unchanged.
+- Inbox safety, confirmed by tests: a developer sync applies only plain paths under `memory/` (no empty,
+  `.` or `..` part, no backslash or colon), refuses a memory path that resolves outside `memory/` through
+  a link, and holds every change to `projects/*/env.json`, `projects/*/cloud/**` and `store.json` for
+  review, also when a branch renames one into `memory/`.
+- The runbook's first-session prompt writes the probe report inside the project clone and sends it to the
+  box: `cd <clone> && agent-mirror probe --full > probe_output.txt 2>&1 && agent-mirror box send
+  probe_output.txt --label first-probe`.
+
 ## 0.5.1
 
 - Docs and rendered setup scripts now ask for a read-only store token. On Claude Code on the web the token is used only for the clone at setup time; in-session pulls and pushes go through the vendor GitHub access for the selected repos.

@@ -233,6 +233,22 @@ def changes(root, base, ref, timeout):
     return found
 
 
+def is_memory_path(path):
+    """True only for a plain path under memory/: what sync may apply from an inbox branch on its own.
+
+    Everything else is held for review, in particular projects/*/env.json, projects/*/cloud/** and
+    store.json, which cloud setup runs as root. A part that is empty, '.', '..', or holds a backslash, a
+    colon or a NUL is held too, so no spelling of a path can leave memory/ on any platform.
+    """
+    parts = str(path).split("/")
+    if len(parts) < 2 or parts[0] != "memory":
+        return False
+    for part in parts:
+        if part in ("", ".", "..") or any(c in part for c in ("\\", ":", "\0")):
+            return False
+    return True
+
+
 def analyse(root, remote, name, timeout):
     """BranchReport with the branch's changes split into memory and held, nothing applied."""
     rep = BranchReport(name)
@@ -242,9 +258,20 @@ def analyse(root, remote, name, timeout):
         return rep
     rep.base = base.strip()
     found = changes(root, rep.base, ref, timeout) or []
-    rep.memory = [(st, p) for st, p in found if p.startswith("memory/")]
-    rep.held = [(st, p) for st, p in found if not p.startswith("memory/")]
+    rep.memory = [(st, p) for st, p in found if is_memory_path(p)]
+    rep.held = [(st, p) for st, p in found if not is_memory_path(p)]
     return rep
+
+
+def inside_memory(root, dest):
+    """True when dest, with every link in its folders resolved, stays inside <root>/memory.
+
+    The memory folder itself must not be a link either: the base is <real root>/memory, not where a
+    link named memory points.
+    """
+    base = os.path.normcase(os.path.join(os.path.realpath(root), "memory"))
+    real = os.path.normcase(os.path.realpath(os.path.dirname(dest)))
+    return real == base or real.startswith(base.rstrip(os.sep) + os.sep)
 
 
 def apply_memory(root, remote, rep, timeout, dry_run):
@@ -266,6 +293,12 @@ def apply_memory(root, remote, rep, timeout, dry_run):
         hits = [n for n, rx in SECRET_PATTERNS if rx.search(text)]
         if hits:
             rep.blocked.append((p, hits))
+    if rep.blocked:
+        return []
+    for st, p in rep.memory:
+        dest = os.path.join(root, *p.split("/"))
+        if not inside_memory(root, dest) or os.path.islink(dest):
+            rep.blocked.append((p, ["path-outside-memory"]))
     if rep.blocked:
         return []
     touched = []
@@ -320,10 +353,17 @@ def report(rep):
         )
         return
     if rep.blocked:
-        warn(
-            "%s: the secret scan blocked it; nothing applied (%s)"
-            % (rep.name, "; ".join("%s: %s" % (p, ", ".join(h)) for p, h in rep.blocked))
-        )
+        outside = [p for p, h in rep.blocked if "path-outside-memory" in h]
+        if outside:
+            warn(
+                "%s: a memory path resolves outside memory/ (a link); nothing applied (%s); see "
+                "`agent-mirror review show %s`" % (rep.name, ", ".join(outside), rep.name)
+            )
+        else:
+            warn(
+                "%s: the secret scan blocked it; nothing applied (%s)"
+                % (rep.name, "; ".join("%s: %s" % (p, ", ".join(h)) for p, h in rep.blocked))
+            )
     if rep.applied:
         out("%s: applied %d memory file(s): %s" % (rep.name, len(rep.applied), ", ".join(rep.applied)))
     for p, side in rep.side_files:

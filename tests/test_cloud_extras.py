@@ -7,7 +7,7 @@ import shutil
 import unittest
 
 from helpers import setUpModule  # noqa: F401 (the sandbox guard runs first)
-from helpers import PLUGIN, ToolTest, is_link, read, readlink, write
+from helpers import FAKE_AZ, PLUGIN, ToolTest, install_fake, is_link, read, readlink, write
 
 from agent_mirror.selfupdate import same_repo
 
@@ -22,20 +22,35 @@ class CompanionTest(ToolTest):
         super().setUp()
         self.set_env_json(companion_repos=COMPANIONS)
 
-    def test_render_adds_a_clone_step_and_hosts(self):
+    def test_render_adds_hosts_and_bootstrap_clones_them(self):
         rc, out = self.run_tool("cloud", "render", "--project", "demo")
         self.assertEqual(rc, 0, out)
         for script in ("claude/setup.sh", "codex/vm-install.sh", "codex/container-setup.sh"):
             text = read(self.s("projects", "demo", "cloud", *script.split("/")))
-            self.assertIn('d="$HOME/companions/helper-lib"', text, script)
-            self.assertIn('remote add origin "https://github.com/example-org/helper-lib"', text)
-            self.assertIn('fetch -q --depth 1 origin "v1.2.0"', text)
-            self.assertIn("checkout -q --force FETCH_HEAD ) || true", text)
-            self.assertIn('d="$HOME/companions/tools"', text)
-            step = [ln for ln in text.splitlines() if "companions/" in ln]
-            self.assertTrue(step and not any("x-access-token" in ln or "STORE_REPO_TOKEN" in ln for ln in step), step)
+            self.assertNotIn("helper-lib", text, script)  # the fixed bootstrap leaves them to `cloud bootstrap`
         hosts = read(self.s("projects", "demo", "cloud", "claude", "allowed-hosts.txt")).split()
         self.assertIn("gitlab.example.com", hosts)
+        readme = read(self.s("projects", "demo", "cloud", "claude", "README.md"))
+        self.assertIn("clones 2 public companion repo(s)", readme)
+        # `cloud bootstrap` clones each one without a token: git init, origin, fetch --depth 1 of the ref
+        self.init_git()
+        rc, out = self.run_tool(
+            "cloud",
+            "bootstrap",
+            "--project",
+            "demo",
+            "--vendor",
+            "claude",
+            "--dry-run",
+            env={"AGENT_RUNTIME": "claude-cloud"},
+        )
+        self.assertEqual(rc, 0, out)
+        d = self.h("companions", "helper-lib")
+        self.assertIn("git -C %s remote add origin https://github.com/example-org/helper-lib" % d, out)
+        self.assertIn("git -C %s fetch -q --depth 1 origin v1.2.0" % d, out)
+        self.assertIn("git -C %s checkout -q --force FETCH_HEAD" % d, out)
+        self.assertIn("fetch -q --depth 1 origin main", out)  # the second one, tools
+        self.assertNotIn("x-access-token", out)
 
     def test_render_refuses_unsafe_entries(self):
         for bad in (
@@ -82,18 +97,48 @@ class DoctorToolsTest(ToolTest):
     def test_az_and_rclone_are_problems_only_when_a_box_needs_them(self):
         empty = os.path.join(self.base, "emptybin")
         os.makedirs(empty)
-        rc, out = self.run_tool("doctor", env={"PATH": empty})
+        here = ("--project", "demo", "--project-path", self.project)
+        rc, out = self.run_tool("doctor", *here, env={"PATH": empty})
         self.assertEqual(rc, 0, out)
         self.assertIn("MISSING az (needed by the box of demo)", out)
         self.assertIn("PROBLEM  az is not installed, and the azure-blob box of demo needs it", out)
         self.assertIn("rclone not needed (no project's box uses rclone)", out)
-        self.set_box(backend="rclone", inbound_remote="fakeremote:in", outbound_remote="fakeremote:out")
+        # demo is not checked out on this machine: its box tools are an info line, not a problem
         rc, out = self.run_tool("doctor", env={"PATH": empty})
+        self.assertEqual(rc, 0, out)
+        self.assertIn("az not installed (only the box of demo uses azure-blob, and it is not checked out", out)
+        self.assertNotIn("PROBLEM  az", out)
+        self.set_box(backend="rclone", inbound_remote="fakeremote:in", outbound_remote="fakeremote:out")
+        rc, out = self.run_tool("doctor", *here, env={"PATH": empty})
         self.assertIn("MISSING rclone (needed by the box of demo)", out)
         self.assertIn("az not needed (no project's box uses azure-blob)", out)
         self.assertNotIn("PROBLEM  az", out)
         self.assertIn("machine: ", out)
         self.assertIn("plan: ", out)
+
+    def test_cloud_session_needs_only_the_tools_of_its_own_projects(self):
+        # the store also holds another project with an rclone box; this session works on demo (azure-blob)
+        other = {
+            "repo": "Example/other",
+            "box": {"backend": "rclone", "shared_remote": "r:a", "sessions_remote": "r:b"},
+        }
+        write(self.s("projects", "other", "env.json"), json.dumps(other))
+        fakebin = install_fake(self.base, "az", FAKE_AZ)
+        system = [p for p in os.environ.get("PATH", "").split(os.pathsep) if p and not shutil.which("rclone", path=p)]
+        system = [p for p in system if not shutil.which("az", path=p)]
+        env = {"AGENT_RUNTIME": "claude-cloud", "PATH": os.pathsep.join([fakebin] + system)}
+        here = ("--project", "demo", "--project-path", self.project)
+        rc, out = self.run_tool("doctor", *here, env=env)
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("MISSING rclone", out)
+        self.assertNotIn("PROBLEM  rclone", out)
+        self.assertIn("rclone not installed (only the box of other uses rclone, and it is not in this session)", out)
+        self.assertIn("ok      az (", out)
+        # the same session without az: a problem, because demo's own box needs it
+        rc, out = self.run_tool("doctor", *here, env=dict(env, PATH=os.pathsep.join(system)))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("MISSING az (needed by the box of demo)", out)
+        self.assertIn("PROBLEM  az is not installed, and the azure-blob box of demo needs it", out)
 
 
 class ProbeArchiveTest(ToolTest):

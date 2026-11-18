@@ -18,7 +18,15 @@ from agent_mirror.inbox import union_merge
 from agent_mirror.install import Installer, remember_project_quiet
 from agent_mirror.config import load_user_config
 from agent_mirror.links import describe, is_linklike, link_target
-from agent_mirror.plan import VENDOR_SKILLS, Plan, build_plan, content_files, project_pairs
+from agent_mirror.plan import (
+    CLOUD_LEFT_AS_IS,
+    NEEDS_CHOICE,
+    VENDOR_SKILLS,
+    Plan,
+    build_plan,
+    content_files,
+    project_pairs,
+)
 from agent_mirror.runtime import CLOUD_RUNTIMES
 from agent_mirror.util import err, out, tilde, warn
 
@@ -122,6 +130,9 @@ class Applier:
                 continue  # decided earlier on this machine: nothing to do again
             elif u["case"] == "first-setup" and self.cloud:
                 self.left_alone.append((u, CLOUD_NO_ADOPT))
+                continue
+            elif u["case"] in NEEDS_CHOICE and self.cloud and u["decision"] is None:
+                self.left_alone.append((u, CLOUD_LEFT_AS_IS))  # a cloud machine is never asked (plan.py)
                 continue
             elif u["case"] == "first-setup" and yes_defaults:
                 action = u["default_action"]

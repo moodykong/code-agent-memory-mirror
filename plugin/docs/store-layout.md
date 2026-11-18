@@ -38,7 +38,10 @@ The store is a git repo you own (keep it private). It holds data only, never a p
 - `schema`: the layout version. agent-mirror warns when a store's schema is newer than it understands.
 - `tool.repo`: where cloud setup scripts get agent-mirror from (a public https URL, no token).
 - `tool.ref`: the branch, tag or commit those scripts check out. Pin a tag or commit for stable
-  cloud sessions; `cloud render` writes it into the scripts.
+  cloud sessions. Since 0.5.2 the scripts read it from `store.json` on the store's default branch when they
+  run, so a new pin needs no new paste: a cloud `session-start` moves agent-mirror to it (see "Cloud
+  files"). Pin 0.5.2 or later: an older agent-mirror has no `cloud bootstrap`, and the scripts then only
+  link the store.
 - `cloud_push`: `"inbox"` (the default for new and adopted stores, and what agent-mirror assumes when the
   key is missing) or `"main"` (the old behaviour: cloud sessions push straight to the main branch).
   See "Inbox branches" below.
@@ -74,6 +77,14 @@ Why: a cloud session must not be able to change the instructions or runbooks tha
 credentials will follow. The cost: memory written in one cloud session reaches other machines only after a
 developer machine syncs. The store token in the setup script only needs read access: it is used to clone the store when the environment is built. Inside a session on Claude Code on the web, the inbox branch is pushed through the vendor's GitHub access for the selected repos (verified), so the store repo must be selected in the session.
 
+The same rule protects cloud setup: `cloud bootstrap` and the drift repair at a cloud session start run
+`projects/*/env.json` (`python`, `setup_commands`, `companion_repos`) as root on the cloud machine, and the
+self-update follows `store.json`. They read these files only from the default branch, and the developer
+sync never applies `projects/`, `store.json` or anything else outside `memory/` from an inbox branch. A
+memory path with an empty, `.` or `..` part, a backslash or a colon is held as well, a memory path that
+resolves outside `memory/` through a link blocks the branch, and a link committed on a branch is written
+as a plain file.
+
 ## runbook.json
 
 `agent-mirror cloud render` writes `projects/<project>/cloud/<vendor>/runbook.json`; the README next to
@@ -99,7 +110,8 @@ it is generated from the same data, and `agent-mirror cloud runbook --json` prin
      "values_command": "agent-mirror cloud secrets --project my-project --vendor claude --out <FILE outside any repo>"},
     {"kind": "setup-script", "title": "...", "text": "...", "file": "setup.sh",
      "placeholders": [{"placeholder": "<STORE_REPO_TOKEN>", "secret": "STORE_REPO_TOKEN", "instructions": "..."}]},
-    {"kind": "first-session", "title": "...", "text": "...", "prompt": "Run agent-mirror probe --full ..."},
+    {"kind": "first-session", "title": "...", "text": "...",
+     "prompt": "Run this command, with <clone> replaced by ...:\ncd <clone> && agent-mirror probe --full > probe_output.txt 2>&1 && agent-mirror box send probe_output.txt --label first-probe\n..."},
     {"kind": "cleanup", "title": "...", "text": "...", "items": ["delete the values file ...", "..."]}
   ]
 }
@@ -109,6 +121,38 @@ Step kinds come from a fixed set: `network-hosts`, `env-values`, `setup-script`,
 `cleanup`. For Codex there are two `setup-script` steps, with `"product": "vm"` (`vm-install.sh`, also
 `vm-start-skill.md`) and `"product": "container"` (`container-setup.sh`, also `container-maintenance.sh`).
 A variable's `recipe` is `none` when no recipe covers it.
+
+## Cloud files
+
+The setup scripts in `projects/<project>/cloud/<vendor>/` are fixed bootstraps (since 0.5.2). The only
+project-specific text in them is the project name, the store URL, the agent-mirror URL (`tool.repo`) and
+the runtime marker. Each one clones the store (Claude: with a read-only token on the settings page) or
+finds the vendor's checkout of it (Codex VM), reads `tool.ref` from `store.json` on the store's default
+branch, checks agent-mirror out at that ref, puts it on PATH and runs `agent-mirror cloud bootstrap
+--project <project> --vendor claude|codex`, which reads the rest from `projects/<project>/env.json` on the
+default branch (see project-config.md, "Cloud setup and drift repair"). If the checked-out agent-mirror
+has no `cloud bootstrap` (a pin older than 0.5.2), the script runs the older steps instead: `init-store
+--adopt`, `install` and, for Claude, `hooks install`.
+
+- Paste each script once per environment. A change to `env.json` or to `tool.ref` takes effect at the next
+  session start; re-rendering updates the README, the host list and the variable names, never the
+  script text. A new store URL, a new `tool.repo` or another project needs a new paste.
+- The second line, `# revision: 1`, is the manual fallback: raise the number and save to make the vendor
+  rebuild its cached machine from scratch (a changed script text makes the vendor rebuild it).
+- Scripts rendered by 0.5.1 and earlier keep working with a newer agent-mirror: they call `init-store`,
+  `install` and `hooks install`, which stay. Their machines have no stamp, so the drift repair does not
+  run there; render and paste the new script to get it.
+
+Written on the cloud machine, never in the store:
+
+| File | What |
+| --- | --- |
+| `~/agent_setup_probe.txt` | the setup script's notes: each step's name, result and time, never output |
+| `<config>/bootstrap-stamp.json` | what `cloud bootstrap` set up: per project a hash of `python`, `setup_commands` and `companion_repos`, the agent-mirror commit, the store commit |
+| `<cache>/session-start.jsonl` | one JSON line per `session-start` run (the newest 50): each step's name, start, end, seconds and status, never output; `probe` prints the last one |
+
+`<config>` and `<cache>` are agent-mirror's folders (`~/.config/agent-mirror` and `~/.cache/agent-mirror`
+on Linux; `agent-mirror debug paths` prints them). Developer machines write `session-start.jsonl` too.
 
 ## Links that `install` and `apply` make
 

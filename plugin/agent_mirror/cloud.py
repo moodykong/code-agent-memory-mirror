@@ -4,6 +4,14 @@ Output goes to <store>/projects/<project>/cloud/<vendor>/. Nothing secret is
 ever rendered: the store token is a placeholder (Claude) or a setup-only
 secret variable (Codex legacy container), environment variables are names
 only, and any credentials in the store's remote URL are dropped.
+
+The setup scripts are fixed bootstraps: the only project-specific text in them
+is the project name, the store URL, the tool URL and the runtime marker. They
+read the tool ref from the cloned store.json and leave everything else to
+`agent-mirror cloud bootstrap` (bootstrap.py), so a change to env.json or to
+store.json's tool.ref needs no new paste: it takes effect at the next session
+start. Changing the `# revision:` line in the pasted script makes the vendor
+rebuild its cached machine.
 """
 
 import json
@@ -19,6 +27,8 @@ SAFE_REF = re.compile(r"^[A-Za-z0-9._/-]+$")
 SAFE_PYTHON = re.compile(r"^[0-9][0-9A-Za-z.+-]*$")
 SAFE_URL_PATH = re.compile(r"^[A-Za-z0-9._~-]+(/[A-Za-z0-9._~-]+)+$")
 SAFE_HOST = re.compile(r"^[A-Za-z0-9.-]+(:[0-9]+)?$")
+SAFE_PROJECT = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._-]*$")
+BOOTSTRAP_SINCE = (0, 5, 2)  # the first agent-mirror with `cloud bootstrap`
 PYTHON_HOSTS = [
     "pypi.org",
     "files.pythonhosted.org",
@@ -62,17 +72,6 @@ def fill(text, values):
     if left:
         raise ValueError("unfilled template placeholders: %s" % ", ".join(sorted(set(left))))
     return text
-
-
-def setup_commands_step(project, commands):
-    if not commands:
-        return "# no setup_commands in projects/%s/env.json" % project
-    lines = ["# the owner's setup_commands from projects/%s/env.json" % project]
-    n = len(commands)
-    for i, cmd in enumerate(commands, 1):
-        lines.append("( %s ) || true" % cmd)
-        lines.append('note "setup command %d of %d done"' % (i, n))
-    return "\n".join(lines)
 
 
 def hosts_for(env, store_host, box):
@@ -169,6 +168,8 @@ def render(ctx, store, project, vendors):
         raise ValueError("store.json tool.ref %r has characters a setup script cannot hold safely" % ref)
     if not re.match(r"^https://[A-Za-z0-9.-]+/[A-Za-z0-9._~/-]+$", tool_repo):
         raise ValueError("store.json tool.repo %r must be a plain https URL" % tool_repo)
+    if not SAFE_PROJECT.match(project) or ".." in project:
+        raise ValueError("project name %r has characters a setup script cannot hold safely" % project)
     python = str(env.get("python") or "").strip()
     if python and not SAFE_PYTHON.match(python):
         raise ValueError("python %r in env.json is not a plain version" % python)
@@ -199,31 +200,29 @@ def render(ctx, store, project, vendors):
         "STORE_PLAIN_URL": "https://%s/%s.git" % (host, path),
         "TOOL_REPO": tool_repo,
         "TOOL_REF": ref,
-        "PYTHON": python,
+        "PROJECTS": project,
+        "PROJECT_FLAGS": "--project %s" % project,
     }
     values["PRELUDE"] = template("_prelude.sh").rstrip("\n")
+    values["FIXED_NOTE"] = template("_fixed.sh").rstrip("\n")
     values["TOOL_STEP"] = fill(template("_tool.sh"), values).rstrip("\n")
-    values["PYTHON_STEP"] = (
-        fill(template("_python.sh"), values).rstrip("\n") if python else "# no python version in the project config"
-    )
-    values["SETUP_COMMANDS_STEP"] = setup_commands_step(project, commands)
-    values["COMPANIONS_STEP"] = companions.setup_step(project, env)
     found = companions.entries(env)
     values["COMPANIONS_LINE"] = (
-        "- Clones %d public companion repo(s) from `companion_repos` into `~/companions/` without a token; "
-        "`session-start` links each one next to the project clone as `../<dir>`." % len(found)
+        "  - clones %d public companion repo(s) from `companion_repos` into `~/companions/` without a token; "
+        "`session-start` links each one next to the project clone as `../<dir>`;" % len(found)
         if found
-        else "- Clones no companion repos (env.json has no `companion_repos`)."
+        else "  - clones no companion repos (env.json has no `companion_repos`);"
     )
     values["PYTHON_LINE"] = (
-        "- Installs Python %s with uv (and uv itself when it is missing)." % python
+        "  - installs Python %s with uv (and uv itself when it is missing);" % python
         if python
-        else "- Installs no Python version (the project config sets none)."
+        else "  - installs no Python version (the project config sets none);"
     )
     values["SETUP_LINE"] = (
-        "- Runs the %d `setup_commands` from env.json, each allowed to fail." % len(commands)
+        "  - runs the %d `setup_commands` from env.json, each allowed to fail, each timed in the note file;"
+        % len(commands)
         if commands
-        else "- Runs no extra setup commands (env.json has no `setup_commands`)."
+        else "  - runs no extra setup commands (env.json has no `setup_commands`);"
     )
     values["BOX_NOTE"] = box_note(box)
     values["INBOX_NOTE"] = inbox_note(store)
@@ -300,9 +299,21 @@ def project_env(ctx, project):
     return store, env
 
 
+def older_than_bootstrap(ref):
+    """True for a version tag (v0.5.1, 0.4.0) of an agent-mirror without `cloud bootstrap`."""
+    m = re.match(r"^v?(\d+)\.(\d+)\.(\d+)$", str(ref or ""))
+    return bool(m) and tuple(int(x) for x in m.groups()) < BOOTSTRAP_SINCE
+
+
 def render_checked(ctx, store, project, vendors):
     files, books = render(ctx, store, project, vendors)
     env = store.load_env(project)
+    if older_than_bootstrap(store.tool_ref()):
+        warn(
+            "store.json pins agent-mirror %s, which has no `cloud bootstrap`: the setup scripts then only link the "
+            "store (no python, setup_commands or companion repos). Pin %s or later in store.json tool.ref."
+            % (store.tool_ref(), ".".join(str(x) for x in BOOTSTRAP_SINCE))
+        )
     for vendor in vendors:
         for w in recipes.coverage_warnings(env, vendor):
             warn("%s: %s" % (vendor, w))
@@ -322,6 +333,10 @@ def cmd_cloud(args, ctx):
         return cmd_cloud_secrets(args, ctx)
     if action == "runbook":
         return cmd_cloud_runbook(args, ctx)
+    if action == "bootstrap":
+        from agent_mirror.bootstrap import cmd_cloud_bootstrap
+
+        return cmd_cloud_bootstrap(args, ctx)
     project = args.project
     store, env = project_env(ctx, project)
     if env is None:

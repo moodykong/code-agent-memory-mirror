@@ -17,7 +17,7 @@ from agent_mirror.box.archive import DEFAULT_LARGE
 from agent_mirror.box.local import human
 from agent_mirror.box.rules import Rules, include_prefix
 from agent_mirror.box.units import archive_unit_of, archive_units
-from agent_mirror.config import resolve_project
+from agent_mirror.projects import box_project
 from agent_mirror.sizes import measure
 from agent_mirror.util import err, out, run
 
@@ -151,7 +151,7 @@ def coverage(rel, is_dir, box, archived=()):
 
 
 def cmd_candidates(args, ctx):
-    project, path = resolve_project(ctx, args.project, args.project_path)
+    project, path = box_project(ctx, args.project, args.project_path)
     if not os.path.isdir(path):
         err("project folder %s does not exist" % path)
         return 1

@@ -490,8 +490,12 @@ class ApplyTest(ReconcileBase):
         cloud = {"AGENT_RUNTIME": "claude-cloud"}
         rc, out = self.apply("--yes-defaults", env=cloud)
         self.assertEqual(rc, 0, out)
-        self.assertIn("left alone: skill:mine", out)
+        # 0.5.2: a skill only the cloud machine has came with the machine (the vendor installs some): it is
+        # external and left alone without a word; units that would wait for a choice are left as they are
+        self.assertNotIn("skill:mine", out)
         self.assertIn("does not publish", out)
+        self.assertIn("left alone: skill:alpha (reconcile): a cloud machine leaves it as it is", out)
+        self.assertNotIn("wait for a choice", out)
         rc, out = self.apply("--choices", self.choices({"instructions:claude": "adopt"}), env=cloud)
         self.assertIn("left alone: instructions:claude", out)
         self.assertFalse(os.path.exists(self.s("skills", "mine")))
@@ -499,7 +503,33 @@ class ApplyTest(ReconcileBase):
         self.assertFalse(os.path.exists(self.s("machines")))  # no profile from a cloud runtime
         rc, out = self.run_tool("install", *self.P(), env=cloud)
         self.assertEqual(rc, 0, out)
-        self.assertIn("left alone: skill:mine (first-setup)", out)
+        self.assertNotIn("wait for a choice", out)
+        self.assertFalse(os.path.exists(self.s("skills", "mine")))
+        data = self.plan(env=cloud)
+        self.assertEqual(data["waiting"], [])
+        self.assertTrue(data["fresh"])
+        mine = [u for u in data["units"] if u["id"] == "skill:mine"][0]
+        self.assertEqual(mine["case"], "external")
+        self.assertIn("provided by the vendor", mine["note"])
+        # the same home on a developer runtime: the skill is first-setup and waits, as before
+        data = self.plan(env={"CLAUDECODE": "1"})
+        mine = [u for u in data["units"] if u["id"] == "skill:mine"][0]
+        self.assertEqual(mine["case"], "first-setup")
+        self.assertIn("skill:mine", data["waiting"])
+
+    def test_cloud_box_unit_never_waits(self):
+        write(self.p("temporary", "result.csv"), "x\n")
+        data = self.plan(env={"AGENT_RUNTIME": "codex-cloud"})
+        box = [u for u in data["units"] if u["id"] == "box:demo"][0]
+        self.assertEqual(box["case"], "first-setup")
+        self.assertFalse(box["waiting"])
+        self.assertIn("a cloud machine has no box role to choose", box["note"])
+        self.assertNotIn("box:demo", data["waiting"])
+        rc, out = self.run_tool("doctor", *self.P(), env={"AGENT_RUNTIME": "codex-cloud"})
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("wait for a choice", out)
+        data = self.plan(env={"CLAUDECODE": "1"})  # a developer machine still chooses its box role
+        self.assertIn("box:demo", data["waiting"])
 
 
 class MachineProfileTest(ReconcileBase):

@@ -1,10 +1,11 @@
 """companion_repos: public repos a cloud session needs next to the project but cannot attach.
 
 In env.json: "companion_repos": [{"repo": "https://github.com/owner/name", "ref": "v1.2", "dir": "name"}].
-`cloud render` adds a setup-script step that clones each one into ~/companions/<dir> at that ref
+`cloud bootstrap` (run by the setup script) clones each one into ~/companions/<dir> at that ref
 without a token (git init, fetch --depth 1 origin <ref>, checkout FETCH_HEAD; never fails the
-script). On a cloud runtime `session-start` links ~/companions/<dir> next to the project clone as
-../<dir> when nothing is there yet.
+setup), and the cloud session start does it again when the entries change (bootstrap.py). On a
+cloud runtime `session-start` links ~/companions/<dir> next to the project clone as ../<dir> when
+nothing is there yet.
 """
 
 import os
@@ -63,30 +64,6 @@ def entries(env):
 
 def hosts(env):
     return [REPO_RX.match(repo).group("host") for repo, _, _ in entries(env)]
-
-
-def setup_step(project, env):
-    """Bash lines for the setup scripts (values are validated, so they are safe inside double quotes)."""
-    items = entries(env)
-    if not items:
-        return "# no companion_repos in projects/%s/env.json" % project
-    lines = [
-        "# public companion repos from projects/%s/env.json, cloned without a token into ~/companions/<dir>;" % project,
-        "# session-start links each one next to the project clone as ../<dir>",
-        'mkdir -p "$HOME/companions" || true',
-    ]
-    for repo, ref, folder in items:
-        lines.append(
-            '( d="$HOME/companions/%s"; mkdir -p "$d" && git -C "$d" init -q && '
-            '{ git -C "$d" remote add origin "%s" 2>/dev/null || git -C "$d" remote set-url origin "%s"; } && '
-            'timeout 120 git -C "$d" fetch -q --depth 1 origin "%s" && git -C "$d" checkout -q --force FETCH_HEAD ) || true'
-            % (folder, repo, repo, ref)
-        )
-        lines.append(
-            'note "companion %s at %s: $(git -C "$HOME/companions/%s" rev-parse --short HEAD 2>/dev/null || echo missing)"'
-            % (folder, ref, folder)
-        )
-    return "\n".join(lines)
 
 
 def link_companions(plat, project, clone, env, dry_run):

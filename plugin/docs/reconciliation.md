@@ -99,6 +99,12 @@ Allowed actions per case are in each unit's `choices`:
 
 On a cloud runtime nothing is adopted: cloud sessions do not publish machine content to the store's main
 line. `first-setup` units are left alone (and say so), and an explicit `adopt` is refused the same way.
+A cloud machine is never asked to choose (since 0.5.2): no unit there is "waiting", so `plan`, `doctor`
+and `probe` report the machine as fresh. A skill only the cloud machine has came with the machine (the
+vendor preinstalls some) and is `external`, left alone without a word; a box unit has no role to choose
+on a throwaway machine; any other unit that would wait (`reconcile`, say) is left as it is, and `apply`
+and `install` list it under "left alone". An explicit choice in a choices file still applies (except
+`adopt`).
 
 ### Safety
 
@@ -220,7 +226,7 @@ A choices file:
 
 ## install
 
-`agent-mirror install` (the cloud setup scripts use it) computes the plan and:
+`agent-mirror install` (`cloud bootstrap` and the older cloud setup scripts use it) computes the plan and:
 
 - on a fresh machine applies the defaults: the same links as before 0.3.0, except that the shared skills
   folder now holds one link per skill;

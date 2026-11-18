@@ -245,13 +245,21 @@ Each home's install links its own slug folder to the same `memory/<project>/` in
 ## Cloud self-update and companion repos
 
 On a cloud runtime `session-start` brings agent-mirror's own clone to the ref pinned in the store's
-`store.json` (only when the clone's origin is `tool.repo`), with `git fetch --depth 1` for the shallow
+`store.json` (read from the default branch since 0.5.2; only when the clone's origin is `tool.repo`), with `git fetch --depth 1` for the shallow
 clone the setup scripts make (a full clone is fetched without `--depth`, so it stays full), and runs the
 new code once (the `AGENT_MIRROR_SELF_UPDATED` variable stops a loop). With `AGENT_MIRROR_TEST_SANDBOX`
 set it never fetches into or checks out a clone outside the sandbox. It also links each project's
 companion repos from `~/companions/<dir>` to `../<dir>` beside the clone, in Python. Both are exercised by
 the test suite on Linux and natively on Windows (a local bare repo as the tool's origin); on a real cloud
 machine they are UNVERIFIED.
+
+Since 0.5.2 the setup scripts are fixed bootstraps that run `agent-mirror cloud bootstrap`, and a cloud
+`session-start` repairs setup drift after the self-update (see project-config.md, "Cloud setup and drift
+repair"). The test suite runs the rendered Claude setup script, and the one 0.5.1 rendered, with bash on
+Linux against local bare repos (skipped where bash or `timeout` is missing, so on native Windows); on a
+real cloud machine the bootstrap and the drift repair are UNVERIFIED. The drift repair stops a command
+that runs out of time together with everything it started (a process group on Linux and macOS,
+`taskkill /T` on Windows).
 
 ## Claude Code on the web: what a real session showed
 
