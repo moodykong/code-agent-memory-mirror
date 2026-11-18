@@ -72,7 +72,7 @@ branches as of the last fetch.
 
 Why: a cloud session must not be able to change the instructions or runbooks that a local agent with real
 credentials will follow. The cost: memory written in one cloud session reaches other machines only after a
-developer machine syncs. The store token still needs write access, to push the inbox branch.
+developer machine syncs. The store token in the setup script only needs read access: it is used to clone the store when the environment is built. Inside a session on Claude Code on the web, the inbox branch is pushed through the vendor's GitHub access for the selected repos (verified), so the store repo must be selected in the session.
 
 ## runbook.json
 

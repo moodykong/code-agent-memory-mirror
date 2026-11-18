@@ -3,8 +3,9 @@
 # Project: @@PROJECT@@ (@@PROJECT_REPO@@)
 # Rendered by `agent-mirror cloud render` from projects/@@PROJECT@@/env.json; re-render instead of editing.
 # Paste the whole file into the environment's "Setup script" box, then replace
-# <STORE_REPO_TOKEN> with a fine-grained token that can read and write ONLY the store repo
-# (write access lets `agent-mirror sync` push memory to an inbox branch; it never pushes to main).
+# <STORE_REPO_TOKEN> with a fine-grained token that can READ ONLY the store repo (Contents: read-only).
+# It is used once, for the clone below. In a session, sync pushes memory to an inbox branch through the
+# vendor's GitHub access for the repos selected in that session, so select the store repo too.
 # Every step is allowed to fail; the script always exits 0.
 # Setup runs before the vendor sets its own session markers, so tell agent-mirror where it is:
 # a cloud machine never adopts local content and never publishes a machine profile.

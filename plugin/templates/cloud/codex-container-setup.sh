@@ -2,7 +2,7 @@
 # agent-mirror setup script for Codex cloud (the legacy container product).
 # Project: @@PROJECT@@ (@@PROJECT_REPO@@)
 # Rendered by `agent-mirror cloud render` from projects/@@PROJECT@@/env.json; re-render instead of editing.
-# Store a fine-grained token (read and write, the store repo only) as a setup-only secret
+# Store a fine-grained token (read-only, the store repo only) as a setup-only secret
 # named STORE_REPO_TOKEN. The script removes the token from the clone's remote at the end,
 # so the agent never sees it; as a result `agent-mirror sync` cannot push from the agent phase.
 # Every step is allowed to fail; the script always exits 0.

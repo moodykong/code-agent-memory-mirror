@@ -2,6 +2,8 @@
 
 ## 0.5.1
 
+- Docs and rendered setup scripts now ask for a read-only store token. On Claude Code on the web the token is used only for the clone at setup time; in-session pulls and pushes go through the vendor GitHub access for the selected repos.
+
 - The sessions commands make a fixed number of rclone or az calls, however many sessions the box holds.
   Real use on a consumer cloud drive, where every call costs seconds, showed 0.5.0 taking minutes for a
   fetch by label with 8 sessions and over two minutes to prune 5 small ones, because it read each manifest,

@@ -128,8 +128,9 @@ def automatic_entries(vendor):
                 "name": STORE_TOKEN,
                 "where": "setup-script",
                 "placeholder": STORE_TOKEN_PLACEHOLDER,
-                "instructions": "a fine-grained token that can read and write ONLY the store repo "
-                "(cloud sessions push memory to an inbox branch with it)",
+                "instructions": "a fine-grained token that can READ ONLY the store repo (Contents: read-only). "
+                "It is used once, to clone the store when the environment is built; inside a session the store "
+                "is reached through the vendor's GitHub access for the repos you select, so select the store too",
             }
         ]
     if vendor == "codex":
@@ -140,7 +141,7 @@ def automatic_entries(vendor):
                 "name": STORE_TOKEN,
                 "where": "env",
                 "instructions": "legacy container product only: a setup-only secret named STORE_REPO_TOKEN holding "
-                "a fine-grained token for the store repo (read and write)",
+                "a fine-grained token for the store repo (Contents: read-only)",
             },
         ]
     return []

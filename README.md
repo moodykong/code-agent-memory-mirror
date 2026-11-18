@@ -209,8 +209,8 @@ owners" in [plugin/docs/reconciliation.md](plugin/docs/reconciliation.md).
   every other change (instructions, skills, project settings, runbooks) for `agent-mirror review`. Why: a
   cloud session must not be able to change the instructions or runbooks that a local agent with real
   credentials will follow. The cost: memory written in one cloud session reaches other machines only after
-  a developer machine syncs. The store token in cloud sessions still needs write access, to push the inbox
-  branch.
+  a developer machine syncs. The store token in a cloud setup script only needs read access; the inbox
+  branch is pushed through the vendor's GitHub access for the repos selected in the session.
 - Project config names where each secret comes from (fixed recipe types only; no command from the store is
   ever run), never the value. `cloud secrets --out` and `box rclone-env --out` write owner-only files and
   refuse paths inside the store or any git work tree.

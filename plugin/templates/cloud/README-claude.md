@@ -9,8 +9,10 @@ The same steps are in `runbook.json` (machine-readable) and `agent-mirror cloud 
 
 ## What the setup script does
 
-- Clones the store to `~/agent-mirror-store` with the token. The token needs write access because cloud
-  sessions push memory to an inbox branch of the store (never to the main branch); see "Inbox" below.
+- Clones the store to `~/agent-mirror-store` with the token. A read-only token is enough: it is used only
+  here, before any session exists. Inside a session, pulls and the push of memory to an inbox branch go
+  through the vendor's GitHub access for the repos you select, so select the store in every session; see
+  "Inbox" below.
 - Checks out agent-mirror (`@@TOOL_REPO@@`) at the ref the store pins in `store.json`
   (`@@TOOL_REF@@`) to `~/code-agent-memory-mirror`, and links it onto PATH.
 @@PYTHON_LINE@@
