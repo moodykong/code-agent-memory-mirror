@@ -6,6 +6,10 @@ sessions  one namespace per session (sessions.py): box send writes into its own 
           and session can list and fetch them (box sessions, box fetch --session); a developer machine
           promotes what is worth keeping into the shared tree (box promote) and prunes the rest.
 
+Notes (notes.py): `box send --note` records what the files are in the session manifest (required on a cloud
+runtime), `box note FOLDER TEXT` records a shared folder's note in its _owners.json entry, and a cloud
+session start prints the newest sessions with their notes.
+
 Backends: azure-blob (Azure CLI), rclone, or none. The older names of the two sides were inbound and
 outbound; the config keys with those names still work.
 """
@@ -14,12 +18,12 @@ import os
 import shlex
 import shutil
 
-from agent_mirror.box import archive, azure, browse, extras, owners, rclone, sessions
+from agent_mirror.box import archive, azure, browse, extras, notes, owners, rclone, sessions
 from agent_mirror.box.common import box_context, old_side_keys, side_setting
 from agent_mirror.box.rules import azure_rule_problems, clean_rel, generic_rule_problems, is_env_file
 from agent_mirror.box.sides import side_for
 from agent_mirror.box.units import archive_unit_of, archive_units
-from agent_mirror.runtime import detect_runtime
+from agent_mirror.runtime import CLOUD_RUNTIMES, detect_runtime
 from agent_mirror.util import err, local_path, out, within
 
 BACKEND_MODULES = {"azure-blob": azure, "rclone": rclone}
@@ -38,6 +42,7 @@ def cmd_box(args, ctx):
 
         return cmd_candidates(args, ctx)
     rel = None
+    runtime = detect_runtime()
     by_session = action == "fetch" and getattr(args, "session", None)
     if action == "fetch" and not by_session and not args.path:
         err("box fetch takes a PATH (the shared tree), or --session ID [PATH] (a session's files)")
@@ -55,16 +60,27 @@ def cmd_box(args, ctx):
         if problem:
             err(problem)
             return 2
+        args.note, problem = notes.clean_note(getattr(args, "note", None))
+        if problem:
+            err(problem)
+            return 2
         refusal = name_refusal(clean_rel(args.path or ""))  # before anything is looked up
         if refusal:
             err(refusal)
             return 2
+        if runtime in CLOUD_RUNTIMES and not args.note:
+            err(notes.missing_note(runtime))  # later sessions see names and sizes only; the note says what it is
+            return 2
+    if action == "note":
+        refused = notes.note_args_problem(args, runtime)
+        if refused:
+            err(refused[1])
+            return refused[0]
     s, rc = box_context(args, ctx)
     if s is None:
         return rc
     backend = BACKEND_MODULES[s["backend"]]
-    runtime = detect_runtime()
-    reads_box = action in ("owners", "sessions", "promote", "prune", "release") or by_session
+    reads_box = action in ("owners", "sessions", "promote", "prune", "release", "note") or by_session
     reads_box = reads_box or (action == "send" and getattr(args, "archive", False))
     reads_box = reads_box or (action == "fetch" and not by_session and archive_unit_of(rel, s["archives"]))
     if reads_box and (shutil.which(sessions.TOOL_FOR_BACKEND[s["backend"]]) or action not in ("owners", "sessions")):
@@ -74,6 +90,8 @@ def cmd_box(args, ctx):
         return owners.push(args, s, runtime, backend, ctx.plat)
     if action == "release":
         return owners.release(args, s, runtime, backend, ctx.plat)
+    if action == "note":
+        return notes.cmd_note(args, s, runtime, backend, ctx.plat)
     if action == "owners":
         return owners.cmd_owners(args, s, runtime, backend)
     if action == "sessions":
@@ -254,13 +272,21 @@ def send(args, s, runtime, backend, rel, root=None):
         files=entries,
         label=session.get("label"),
         new=created,
+        note=getattr(args, "note", None),
+        note_paths=[rel],
     )
     if not ok:
         err("the files were uploaded, but the session manifest could not be updated: %s" % problem)
         return 1
     out(
-        "session %s now lists %d file(s); other sessions list it with `agent-mirror box sessions` and fetch it "
-        "with `%s`" % (sid, len(doc.get("files") or []), sessions.fetch_command(s, sid))
+        "session %s now lists %d file(s)%s; other sessions list it with `agent-mirror box sessions` and fetch it "
+        "with `%s`"
+        % (
+            sid,
+            len(doc.get("files") or []),
+            " and your note" if getattr(args, "note", None) else "",
+            sessions.fetch_command(s, sid),
+        )
     )
     return 0
 

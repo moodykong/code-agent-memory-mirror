@@ -190,6 +190,11 @@ def cmd_timer(args, ctx, plat=None):
         return 0
     if args.action == "install" and plat.windows and len(subprocess.list2cmdline(argv)) > 261:
         warn("the task command is longer than the 261 characters schtasks accepts; move the plugin to a shorter path")
+    if args.action == "install" and "--log" in argv:
+        log = argv[argv.index("--log") + 1]
+        moved = plat.disk_note(log)
+        if moved:
+            out("sync log: %s%s" % (log, moved))
     if args.dry_run:
         out("dry run: nothing will change")
         for path, text in p["files"].items():

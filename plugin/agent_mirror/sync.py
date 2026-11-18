@@ -22,7 +22,7 @@ from agent_mirror.install import merge_tree
 from agent_mirror.links import is_linklike
 from agent_mirror.platforms import pid_alive
 from agent_mirror.runtime import CLOUD_RUNTIMES, detect_runtime
-from agent_mirror.util import err, git, is_git_toplevel, out, short, tilde, upstream, warn
+from agent_mirror.util import err, git, is_git_toplevel, not_a_clone, out, short, tilde, upstream, warn
 
 SYNC_PATHS = ("memory", "AGENTS.md", "CLAUDE.md", "skills", "machines")
 LOCK_NAME = "agent-mirror-sync.lock"
@@ -178,9 +178,15 @@ def cmd_sync(args, ctx):
     log = getattr(args, "log", None)
     if log:
         os.makedirs(os.path.dirname(os.path.abspath(log)), exist_ok=True)
-        with open(log, "a", encoding="utf-8") as fh, contextlib.redirect_stdout(fh), contextlib.redirect_stderr(fh):
-            print("--- %s sync" % time.strftime("%Y-%m-%dT%H:%M:%S"))
-            return _locked_sync(args, ctx)
+        with open(log, "a", encoding="utf-8") as fh:
+            # the file exists now, so the check sees where it really is (a Microsoft Store Python keeps
+            # files written under AppData in its own package folder; other programs do not see them there)
+            moved = ctx.plat.disk_note(os.path.abspath(log))
+            if moved:
+                out("sync: the log goes to %s%s" % (log, moved))
+            with contextlib.redirect_stdout(fh), contextlib.redirect_stderr(fh):
+                print("--- %s sync" % time.strftime("%Y-%m-%dT%H:%M:%S"))
+                return _locked_sync(args, ctx)
     return _locked_sync(args, ctx)
 
 
@@ -188,7 +194,7 @@ def _locked_sync(args, ctx):
     store = ctx.require_store()
     timeout = args.timeout
     if not is_git_toplevel(store.root, timeout):
-        err("the store %s is not a git clone" % store.root)
+        err(not_a_clone(store.root, "the store", timeout))
         return 1
     rc, gitdir, _ = git(store.root, ["rev-parse", "--absolute-git-dir"], timeout)
     gitdir = gitdir.strip() if rc == 0 and gitdir.strip() else os.path.join(store.root, ".git")

@@ -152,6 +152,64 @@ def is_git_toplevel(path, timeout=DEFAULT_TIMEOUT):
     return bool(top) and norm(top) == norm(os.path.realpath(path))
 
 
+# git's "dubious ownership" refusal ------------------------------------------------
+
+DUBIOUS_AT = re.compile(r"dubious ownership in repository at '([^'\r\n]+)'", re.I)
+SAFE_DIRECTORY_LINE = re.compile(r"safe\.directory\s+(\S.*?)\s*$", re.M)
+
+
+def dubious_ownership(text):
+    """The folder git names when it refuses a repository for dubious ownership ('' when it names none), or None.
+
+    Since 2.35.2 git refuses a repository owned by another user (on Windows: also one owned by the
+    Administrators group, as a clone made from an elevated shell is) and says how to allow it with a
+    `safe.directory` setting. The setting's line is matched too, because git's messages can be translated.
+    """
+    text = str(text or "")
+    m = SAFE_DIRECTORY_LINE.search(text)
+    if m and "--add" in text[: m.start()].rsplit("\n", 1)[-1]:
+        return m.group(1).strip().strip("'\"")
+    m = DUBIOUS_AT.search(text)
+    if m:
+        return m.group(1)
+    return "" if "dubious ownership" in text.lower() else None
+
+
+def safe_directory_command(path):
+    """The command that lets git use this folder: git's own form, with forward slashes."""
+    p = str(path).replace("\\", "/")
+    if any(c.isspace() for c in p):
+        p = '"%s"' % p
+    return "git config --global --add safe.directory %s" % p
+
+
+def git_refusal(path, timeout=DEFAULT_TIMEOUT, stderr=None):
+    """One line naming git's dubious-ownership refusal of the clone at path and its remedy, or None.
+
+    stderr: the error output of a git call that already failed there (else one read-only call is made).
+    None also when git refuses the folder for another reason (it is simply not a clone, say). This never
+    changes the user's git config; it only says what to run.
+    """
+    if stderr is None:
+        rc, _, stderr = run(["git", "-C", path, "rev-parse", "--show-toplevel"], timeout=timeout)
+        if rc == 0:
+            return None
+    repo = dubious_ownership(stderr)
+    if repo is None:
+        return None
+    return (
+        'git refuses %s: "detected dubious ownership" (the folder belongs to another user or group, such as '
+        "Administrators when it was cloned from an elevated shell). Allow it once with: %s"
+        % (path, safe_directory_command(repo or os.path.abspath(path)))
+    )
+
+
+def not_a_clone(path, what="the store", timeout=DEFAULT_TIMEOUT):
+    """Why git cannot use path: git's dubious-ownership refusal and its remedy, else '<what> <path> is not a git
+    clone'."""
+    return git_refusal(path, timeout) or "%s %s is not a git clone" % (what, path)
+
+
 def upstream(root, timeout=DEFAULT_TIMEOUT):
     rc, stdout, _ = git(root, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], timeout)
     return stdout.strip() if rc == 0 and stdout.strip() else None

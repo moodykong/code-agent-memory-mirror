@@ -18,7 +18,7 @@ import sys
 
 from agent_mirror import PLUGIN_ROOT
 from agent_mirror.platforms import current, real_inside
-from agent_mirror.util import git, out, short, warn
+from agent_mirror.util import git, git_refusal, out, short, warn
 
 MARKER = "AGENT_MIRROR_SELF_UPDATED"
 
@@ -78,9 +78,13 @@ def _update(store, timeout, dry_run, argv, env, handoff=None):
     if ref is None:
         warn("agent-mirror self-update skipped: %s" % why)
         return None
-    rc, top, _ = git(tool, ["rev-parse", "--show-toplevel"], timeout)
+    rc, top, stderr = git(tool, ["rev-parse", "--show-toplevel"], timeout)
     if rc != 0 or os.path.normcase(os.path.realpath(top.strip())) != os.path.normcase(os.path.realpath(tool)):
-        out("agent-mirror: %s is not a git clone; no self-update" % tool)
+        refusal = git_refusal(tool, stderr=stderr) if rc != 0 else None
+        if refusal:
+            warn("agent-mirror self-update skipped: %s" % refusal)
+        else:
+            out("agent-mirror: %s is not a git clone; no self-update" % tool)
         return None
     rc, origin, _ = git(tool, ["remote", "get-url", "origin"], timeout)
     if rc != 0 or not same_repo(origin.strip(), repo):

@@ -7,8 +7,11 @@ setup_commands or companion_repos changed since `cloud bootstrap`; bootstrap.py)
 dependency sync in the project folder, the project's session_start_commands,
 install for the runtime's agent (every unit that needs no decision, including the
 memory link), and links to the project's companion repos. Always prints the
-memory index path. Each step's name, times and exit status (never its output) go
-to <cache>/session-start.jsonl (steplog.py); `agent-mirror probe` shows the last record.
+memory index path. On a cloud runtime it ends with each project's newest box
+sessions and their notes, and the shared folders that have notes (box/notes.py;
+bounded by --box-timeout). Each step's name, times and exit status (never its
+output) go to <cache>/session-start.jsonl (steplog.py); `agent-mirror probe`
+shows the last record.
 """
 
 import os
@@ -25,7 +28,7 @@ from agent_mirror.projects import discover_projects
 from agent_mirror.runtime import CLOUD_RUNTIMES, agent_for_runtime, detect_runtime
 from agent_mirror.selfupdate import self_update
 from agent_mirror.steplog import StepLog
-from agent_mirror.util import git, is_git_toplevel, out, run, short, tilde, upstream, warn
+from agent_mirror.util import git, git_refusal, is_git_toplevel, out, run, short, tilde, upstream, warn
 
 
 def command_argv(spec, store_root, project_path):
@@ -77,6 +80,10 @@ def run_project_command(spec, store_root, path, timeout, dry_run, what):
 def pull_store(store, timeout, dry_run):
     """Pull the store. Returns its status for the step log."""
     if not is_git_toplevel(store.root, timeout):
+        refusal = git_refusal(store.root, timeout)
+        if refusal:
+            warn("%s; skipped the pull" % refusal)
+            return "skipped (git refuses the store: dubious ownership)"
         warn("store %s is not a git clone; skipped the pull" % store.root)
         return "skipped (not a git clone)"
     up = upstream(store.root, timeout)
@@ -194,4 +201,8 @@ def _session_start(args, ctx, store, runtime, log):
             "to none of them (UNVERIFIED how Claude picks the folder); read the memory index files listed above"
             % (len(names), d.start)
         )
+    if runtime in CLOUD_RUNTIMES:
+        from agent_mirror.box.notes import session_start_notes
+
+        session_start_notes(ctx, store, d.matched, runtime, args, log)
     return rc, False

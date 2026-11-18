@@ -111,7 +111,7 @@ it is generated from the same data, and `agent-mirror cloud runbook --json` prin
     {"kind": "setup-script", "title": "...", "text": "...", "file": "setup.sh",
      "placeholders": [{"placeholder": "<STORE_REPO_TOKEN>", "secret": "STORE_REPO_TOKEN", "instructions": "..."}]},
     {"kind": "first-session", "title": "...", "text": "...",
-     "prompt": "Run this command, with <clone> replaced by ...:\ncd <clone> && agent-mirror probe --full > probe_output.txt 2>&1 && agent-mirror box send probe_output.txt --label first-probe\n..."},
+     "prompt": "Run this command, with <clone> replaced by ...:\ncd <clone> && agent-mirror probe --full > probe_output.txt 2>&1 && agent-mirror box send probe_output.txt --label first-probe --note \"Report of agent-mirror probe --full ...\"\n..."},
     {"kind": "cleanup", "title": "...", "text": "...", "items": ["delete the values file ...", "..."]}
   ]
 }
@@ -220,11 +220,12 @@ folder: `{"path": "<folder>", "archive": true, "files", "bytes", "archive_bytes"
 `decompile/project-cli` has its table of contents at `box_toc/decompile/project-cli.json`); the table of
 contents file lists every file of the folder with its size and whether it is in the bundle or travels on
 its own. The folder owners are one more line: `{"path": "_owners.json", "schema": 1, "owners":
-{"<folder>": {"machine_id", "machine_name", "since", "fingerprint", "updated"}}}`. A box written by an
+{"<folder>": {"machine_id", "machine_name", "since", "fingerprint", "updated"}}}`, where an entry may also
+hold the folder's note (`note`, `note_updated`, since 0.5.3; `box note` writes it into this line too). A box written by an
 older version may also have its single-writer marker: `{"path": "_writer.json", "writer": {"machine_id",
 "machine_name", "date", "tool"}}`. When the sessions side holds sessions, one more line summarizes the
 newest sessions: `{"path": "_sessions", "sessions": [{"id", "label", "runtime", "branch", "commit", "updated",
-"files", "bytes"}], "more": N}` (the newest 50). Readers of the entries skip these lines; `plan`, `box ls`, `box owners`
+"files", "bytes", "note"}], "more": N}` (the newest 50; `note` since 0.5.3). Readers of the entries skip these lines; `plan`, `box ls`, `box owners`
 and `box sessions` (without the transfer program) use them. Commit the index and `box_toc/` so `agent-mirror box ls` and `agent-mirror plan`
 work offline on other machines.
 

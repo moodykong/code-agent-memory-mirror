@@ -179,6 +179,16 @@ class RenderTest(ToolTest):
     def test_render_warns_when_the_store_pins_a_tool_without_cloud_bootstrap(self):
         out = self.render("v0.5.1")
         self.assertIn("store.json pins agent-mirror v0.5.1, which has no `cloud bootstrap`", out)
+        self.assertIn("store.json pins agent-mirror v0.5.1, which has no `box send --note`", out)
+
+    def test_render_warns_when_the_store_pins_a_tool_without_box_send_note(self):
+        out = self.render("v0.5.2")
+        self.assertNotIn("has no `cloud bootstrap`", out)
+        self.assertIn("store.json pins agent-mirror v0.5.2, which has no `box send --note`: the runbook's", out)
+        write(self.s("store.json"), json.dumps({"schema": 1, "tool": {"repo": TOOL_URL, "ref": "v0.5.3"}}))
+        rc, out = self.run_tool("cloud", "render", "--project", "demo")
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("has no `box send --note`", out)
 
     def test_runbook_prompt_writes_the_report_inside_the_clone(self):
         self.render()
@@ -186,7 +196,7 @@ class RenderTest(ToolTest):
         prompt = [s for s in book["steps"] if s["kind"] == "first-session"][0]["prompt"]
         self.assertIn(
             "cd <clone> && agent-mirror probe --full > probe_output.txt 2>&1 && "
-            "agent-mirror box send probe_output.txt --label first-probe",
+            "agent-mirror box send probe_output.txt --label first-probe --note ",
             prompt,
         )
         self.assertIn("your clone of Example/demo", prompt)

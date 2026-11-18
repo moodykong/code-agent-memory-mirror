@@ -175,6 +175,10 @@ sides:
   developer machine copies what is worth keeping into the shared tree (`box promote`) and deletes old
   sessions (`box prune`). See "Sessions" below.
 
+Both sides carry short notes, so that a later session knows what files are for and not only their names
+and sizes: `box send --note TEXT` (required on a cloud runtime) and `box note FOLDER TEXT` for a shared
+folder. See "Notes" below.
+
 Older versions called the two sides **inbound** (shared) and **outbound** (sessions). The old key names
 still work, and `doctor` says so in one line:
 
@@ -331,8 +335,11 @@ A box can have several writer machines, each owning its own folders. The units o
 
 ```json
 {"schema": 1, "folders": {"<folder>": {"machine_id": "...", "machine_name": "...", "since": "...",
-                                       "fingerprint": "...", "updated": "..."}}}
+                                       "fingerprint": "...", "updated": "...",
+                                       "note": "...", "note_updated": "..."}}}
 ```
+
+`note` and `note_updated` (since 0.5.3, optional) are the folder's note: see "Notes" below.
 
 `box push` claims folders nobody owns, uploads the folders this machine owns, and skips (not an error)
 folders another machine owns, saying whether the local copy is the same. `--only FOLDER` limits a push,
@@ -387,6 +394,9 @@ Every session writes its own namespace on the sessions side:
   `box send --new-session`, or when the remembered one is older than 24 hours.
 - `box send --label TEXT` gives the session a short label on first use (letters, digits, `-`, `_`, `.`;
   up to 60). A later different label is ignored with a note.
+- `box send --note TEXT` records what the files are, why they were made and what to do next (one to three
+  sentences). It is required on a cloud runtime: a send without one is refused with exit code 2 before
+  anything is uploaded. See "Notes" below.
 - `box send PATH` takes PATH relative to the project folder first. When nothing is there, PATH is taken
   relative to the current folder (or as an absolute path): a file or folder inside the project keeps its
   path in the project, and a FILE outside the project is sent under its file name (`box send
@@ -419,20 +429,30 @@ Every session writes its own namespace on the sessions side:
   "promoted": [
     {"path": "results/run-3", "to": "results/run-3", "folders": ["results"], "machine_id": "7d4e...",
      "machine_name": "desk-a", "date": "2026-11-18T09:00:00Z"}
+  ],
+  "note": "Run 3 with the new loss; compare its curves with run 2 before tuning further.",
+  "notes": [
+    {"at": "2026-11-17T10:39:58Z", "note": "Summary of runs 1 to 3; the baseline is run 1.",
+     "paths": ["results/summary.csv"]},
+    {"at": "2026-11-17T10:40:12Z", "note": "Run 3 with the new loss; compare its curves with run 2 before tuning further.",
+     "paths": ["results/run-3"]}
   ]
 }
 ```
 
-  `machine` is null when the machine has no id yet; `git` values are null outside a git clone. The
-  manifest never holds environment values or absolute paths.
+  `machine` is null when the machine has no id yet; `git` values are null outside a git clone. `note`
+  and `notes` are there only when a send gave a note (since 0.5.3). The manifest never holds environment
+  values or absolute paths.
 - `box sessions [--json] [--limit N]` (any runtime, read-only) lists the namespaces newest first by start
-  time: id, label, runtime, branch and short commit, file count, total size, last update. It reads one
+  time: id, label, runtime, branch and short commit, file count, total size, last update, and the
+  session's note under it (up to 200 characters; `--json` has the whole note and the count of notes). It reads one
   listing of the sessions side and one manifest per listed session; older namespaces
   (`<runtime>-<YYYYMMDDTHHMMSSZ>`, before 0.5.0) are listed from their files as "no manifest". Without the
   transfer program it shows the summary of the last `box index`.
 - `box fetch --session ID [PATH] [--into DIR]` downloads a session's files (all, or PATH inside it) into
   `<project>/_sessions/<session id>/` (`--into` is relative to the project folder; `--into .` writes over
-  the project tree). ID is the id, a unique start of it, or a label that exactly one session has. A
+  the project tree). It prints every note of the session first, with the paths each note was given for
+  (`--dry-run` prints them and downloads nothing). ID is the id, a unique start of it, or a label that exactly one session has. A
   developer runtime never overwrites a local file; the disk guard applies; archives are extracted with
   the safety checks of the shared side. `/_sessions/` is added to `.git/info/exclude`; `box status` lists
   fetched sessions and `box evict _sessions/<session id>` deletes them.
@@ -447,8 +467,69 @@ Every session writes its own namespace on the sessions side:
   deletes session namespaces. It always lists them with sizes first and deletes only with `--yes`; it
   never touches the shared tree and refuses names that do not look like session ids.
 - `box index` adds one line `{"path": "_sessions", "sessions": [...], "more": N}` with the id, label,
-  runtime, branch, commit, last update, file count and size of the newest 50 sessions, for offline use;
-  `box sessions` stays the live source.
+  runtime, branch, commit, last update, file count, size and note of the newest 50 sessions, for offline
+  use; `box sessions` stays the live source.
+
+### Notes
+
+A later session sees names and sizes in the box, not what the files are for. Notes are short free text
+kept next to the records that already exist (the session manifest, `_owners.json`, the committed index);
+there is no new file and no new git record.
+
+- **Session notes.** `box send --note TEXT` sets the manifest's `note` (the latest note given) and adds
+  `{"at", "note", "paths"}` to its `notes` list, so a later send with another note does not erase what an
+  earlier one said. Consecutive sends with the same text share one entry; the list keeps the newest 20.
+  On a cloud runtime a send without a note is refused (exit code 2, one line, nothing uploaded):
+
+  ```
+  error: refusing box send on claude-cloud without a note: pass --note "what these files are and why" (one to three sentences: what the files are, why they were made, what to do next; later sessions read it); nothing was uploaded
+  ```
+
+  On a developer machine the note is optional. `box sessions` shows it under each session, `box fetch
+  --session` prints every note first, and `box index` copies the latest note into its session summary.
+- **Folder notes.** `agent-mirror box note FOLDER TEXT` (or `--clear`) on a developer machine records a
+  one-line note on a folder of the shared tree (a folder unit, as `box owners` names it) in that folder's
+  `_owners.json` entry. Only the folder's owning machine sets it, with the same rule as `box release`:
+
+  ```
+  error: <folder> is owned by desk-b since 2026-11-01T09:00:00Z, not this machine; only its owner sets its note
+  error: <folder> has no owner in <shared>/_owners.json yet; only its owning machine sets its note. Push it from here first (`agent-mirror box push --only <folder>` claims it), then set the note
+  error: refusing box note on claude-cloud: only the folder's owning machine (a developer machine) sets folder notes
+  ```
+
+  `box push` keeps the note when it rewrites the entry, and so does a take-over (the note describes the
+  folder, not the machine); `box release` removes the entry with its note. `box note` also writes the entry
+  into the owners line of the local `box_index.jsonl` when it has one: commit the index (as after `box
+  index`), and `box ls` and `box owners` show the note offline on every machine. `box index` copies it too.
+- **Text rules.** A note is one line: control characters are dropped and whitespace (newlines included)
+  is collapsed to single spaces. At most 500 characters. Text that matches the secret patterns of `sync`'s
+  scan, or holds the value of an environment variable whose name looks secret, is refused; the message
+  names the pattern, never the text.
+- **At a cloud session start.** `session-start` on a cloud runtime ends with, per project of the session,
+  the newest 5 sessions (label and id, age, file count, note) and the shared folders that have notes:
+
+  ```
+  box of my-project: the newest 5 of 12 sessions, from the box (fetch one with `agent-mirror box fetch --session ID --project my-project`):
+    first-probe (claude-cloud-20261118T101500Z-a1b2c3), 2 h ago, 1 file; note: Report of agent-mirror probe --full from the first session in this environment; read it before changing the cloud setup.
+    codex-cloud-20261117T090000Z-0f1e2d, 1 d ago, 14 files; note: Loss curves of run 7; compare them with run 8 before tuning further.
+  box of my-project: shared folders with notes, from the committed index (`agent-mirror box ls` shows them too):
+    data/raw: Raw sensor exports from the lab; read-only inputs of the training scripts.
+  ```
+
+  It makes the calls `box sessions` makes (one listing and one batched manifest read; azure-blob signs in
+  first), all within `session-start --box-timeout SECONDS` (default 20; 0 skips it). The folder notes come
+  from the committed index, so they cost no call. It never fails the session: when it cannot list, it
+  prints one line (`box of my-project: could not list its sessions (...); see them later with ...`), and
+  without the transfer program it shows the session summary of the committed index. The step is recorded
+  in the session-start step log as `box notes (<project>)`. A developer machine prints nothing new.
+
+A rule for your instructions file (the store's `AGENTS.md`), so that cloud agents use the notes:
+
+```
+- A cloud agent gives a note with every `agent-mirror box send` (`--note "what these files are, why they
+  were made, what to do next"`) and reads the notes (`agent-mirror box sessions`, `agent-mirror box ls`)
+  before using files from the box.
+```
 
 #### Cost on slow remotes
 
@@ -463,6 +544,7 @@ however many sessions the box holds:
 | `box send` | 3 for the first send of a session (upload, manifest write, read back), 4 later (upload, manifest read, write, read back) |
 | `box prune --yes` | rclone: 5 (listing, manifests, one `rclone delete` with an anchored filter `+ /<session id>/**` per selected namespace and `- **`, one `rclone rmdirs` with the same filters for the emptied folders, a check); azure-blob: one `delete-batch` per selected namespace plus 3 |
 | `box index` | 2 for its session summary |
+| cloud `session-start` | the 2 of `box sessions` per project (azure-blob: plus `az account show`, and a sign-in when it is needed); the folder notes come from the committed index |
 
 Fetching by full id is the cheapest lookup: it never looks at other sessions. `--limit` cuts what
 `box sessions` reads: rclone downloads only the manifests it shows; azure-blob downloads every manifest in

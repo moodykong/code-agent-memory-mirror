@@ -42,7 +42,7 @@ import time
 from agent_mirror import PLUGIN_ROOT, __version__, companions
 from agent_mirror.platforms import current, new_group_kwargs, real_inside, stop_tree
 from agent_mirror.runtime import CLOUD_RUNTIMES, detect_runtime
-from agent_mirror.util import err, exe_path, git, is_git_toplevel, out, run, short, tilde, warn, write_text
+from agent_mirror.util import err, exe_path, git, is_git_toplevel, not_a_clone, out, run, short, tilde, warn, write_text
 
 STAMP_NAME = "bootstrap-stamp.json"
 STAMP_SCHEMA = 1
@@ -83,7 +83,7 @@ def default_branch(root, timeout):
     remote-tracking ref exists. Refused: a checkout on an inbox/* branch, and a ref that names one.
     """
     if not is_git_toplevel(root, timeout):
-        return None, "the store %s is not a git clone" % root
+        return None, not_a_clone(root, "the store", timeout)
     rc, cur, _ = git(root, ["symbolic-ref", "-q", "--short", "HEAD"], timeout)
     current = cur.strip() if rc == 0 and cur.strip() else None
     if current and current.startswith(INBOX_PREFIX):

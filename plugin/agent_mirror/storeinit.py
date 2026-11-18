@@ -13,6 +13,7 @@ from agent_mirror.util import (
     err,
     expand,
     git,
+    git_refusal,
     git_toplevel,
     norm,
     out,
@@ -185,7 +186,11 @@ def adopt(ctx, path, args):
         )
     top = git_toplevel(path, 10)
     if not top:
-        warn("%s is not a git clone; sync needs git (git init, add a remote, push)" % path)
+        refusal = git_refusal(path, 10)
+        if refusal:
+            warn("%s; sync needs git to use it" % refusal)
+        else:
+            warn("%s is not a git clone; sync needs git (git init, add a remote, push)" % path)
     else:
         rc, origin, _ = git(path, ["remote", "get-url", "origin"], 10)
         if args.remote:

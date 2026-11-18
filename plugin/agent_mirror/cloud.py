@@ -29,6 +29,7 @@ SAFE_URL_PATH = re.compile(r"^[A-Za-z0-9._~-]+(/[A-Za-z0-9._~-]+)+$")
 SAFE_HOST = re.compile(r"^[A-Za-z0-9.-]+(:[0-9]+)?$")
 SAFE_PROJECT = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._-]*$")
 BOOTSTRAP_SINCE = (0, 5, 2)  # the first agent-mirror with `cloud bootstrap`
+NOTES_SINCE = (0, 5, 3)  # the first agent-mirror with `box send --note` (the runbook's first-session prompt uses it)
 PYTHON_HOSTS = [
     "pypi.org",
     "files.pythonhosted.org",
@@ -118,9 +119,12 @@ ON_DEMAND = (
     "frees space with `agent-mirror box evict <path>`. Fetches refuse to run when they would leave less than\n"
     "`box.min_free_bytes` (default 2 GiB) free. Archived folders fetch their bundle only; large files are\n"
     "listed with the exact command to fetch each one.\n"
-    "\nSessions: `agent-mirror box send <path> --label <name>` uploads results into this session's own\n"
-    "namespace on the sessions side. `agent-mirror box sessions` lists what earlier sessions produced and\n"
-    "`agent-mirror box fetch --session <id or label> [path]` downloads it into `_sessions/<session id>/`.\n"
+    '\nSessions: `agent-mirror box send <path> --label <name> --note "<what these files are and why>"` uploads\n'
+    "results into this session's own namespace on the sessions side; a cloud session must give the note, and\n"
+    "later sessions read it. `agent-mirror box sessions` lists what earlier sessions produced, with their\n"
+    "notes, and `agent-mirror box fetch --session <id or label> [path]` prints a session's notes and downloads\n"
+    "it into `_sessions/<session id>/`. Each cloud session start lists the newest sessions with their notes\n"
+    "and the shared folders that have notes (set with `agent-mirror box note` by the folder's owning machine).\n"
     "Cloud sessions never write the shared tree; results worth keeping are promoted by the user's own\n"
     "machine (`agent-mirror box promote`).\n"
 )
@@ -299,10 +303,11 @@ def project_env(ctx, project):
     return store, env
 
 
-def older_than_bootstrap(ref):
-    """True for a version tag (v0.5.1, 0.4.0) of an agent-mirror without `cloud bootstrap`."""
+def older_than_bootstrap(ref, since=BOOTSTRAP_SINCE):
+    """True for a version tag (v0.5.1, 0.4.0) of an agent-mirror older than since (default: the first with
+    `cloud bootstrap`)."""
     m = re.match(r"^v?(\d+)\.(\d+)\.(\d+)$", str(ref or ""))
-    return bool(m) and tuple(int(x) for x in m.groups()) < BOOTSTRAP_SINCE
+    return bool(m) and tuple(int(x) for x in m.groups()) < since
 
 
 def render_checked(ctx, store, project, vendors):
@@ -313,6 +318,12 @@ def render_checked(ctx, store, project, vendors):
             "store.json pins agent-mirror %s, which has no `cloud bootstrap`: the setup scripts then only link the "
             "store (no python, setup_commands or companion repos). Pin %s or later in store.json tool.ref."
             % (store.tool_ref(), ".".join(str(x) for x in BOOTSTRAP_SINCE))
+        )
+    if older_than_bootstrap(store.tool_ref(), NOTES_SINCE):
+        warn(
+            "store.json pins agent-mirror %s, which has no `box send --note`: the runbook's first-session prompt "
+            "uses it and stops there with an unknown-argument error. Pin %s or later in store.json tool.ref."
+            % (store.tool_ref(), ".".join(str(x) for x in NOTES_SINCE))
         )
     for vendor in vendors:
         for w in recipes.coverage_warnings(env, vendor):

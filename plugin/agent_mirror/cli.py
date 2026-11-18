@@ -182,6 +182,12 @@ def build_parser():
         default=900,
         help="cloud: seconds in all for running setup steps again when the store changed them (default 900)",
     )
+    s.add_argument(
+        "--box-timeout",
+        type=int,
+        default=20,
+        help="cloud: seconds for listing each project's newest box sessions and their notes (default 20; 0 skips it)",
+    )
     s.set_defaults(func=lazy("session", "cmd_session_start"))
 
     s = sub.add_parser("sync", parents=[common, timeout, dry], help="scan, commit, pull and push store changes")
@@ -217,7 +223,7 @@ def build_parser():
     s = sub.add_parser(
         "box",
         parents=[common],
-        help="bulk files: a shared tree (push, ls, fetch) and per-session namespaces (send, sessions, promote)",
+        help="bulk files: a shared tree (push, ls, fetch, note) and per-session namespaces (send, sessions, promote)",
     )
     box = s.add_subparsers(dest="box_action", metavar="action")
     box.required = True
@@ -267,6 +273,18 @@ def build_parser():
     )
     b.add_argument("folders", nargs="+", metavar="FOLDER", help="a folder of the box, as `box owners` names it")
     b = box.add_parser(
+        "note",
+        parents=[common, timeout, proj, dry, transfer],
+        help="set or clear a shared folder's one-line note (its owning machine only)",
+        description="Record a one-line note on a folder of the shared tree in <shared>/_owners.json: what the "
+        "folder holds and what it is for. Only the folder's owning machine sets or clears it, on a developer "
+        "machine. `box push` keeps it; `box owners`, `box ls` and a cloud session start show it. The owners "
+        "line of the local box index is updated too; commit the index so other machines see the note offline.",
+    )
+    b.add_argument("folder", metavar="FOLDER", help="a folder of the box, as `box owners` names it")
+    b.add_argument("text", nargs="?", metavar="TEXT", help="the note: one line, up to 500 characters")
+    b.add_argument("--clear", action="store_true", help="remove the folder's note")
+    b = box.add_parser(
         "index",
         parents=every,
         help="list the shared side into box_index.jsonl (with archive contents, owners and a session summary)",
@@ -279,7 +297,8 @@ def build_parser():
         parents=every + [force],
         help="download from the shared tree, or a session's files with --session",
         description="Download a file or folder of the shared tree into the project folder, or with --session ID "
-        "the files of one session (all of them, or PATH inside it) into <project>/_sessions/<session id>/. "
+        "the files of one session (all of them, or PATH inside it) into <project>/_sessions/<session id>/, "
+        "after printing the session's notes (--dry-run prints them and downloads nothing). "
         "Existing local files are never overwritten on a developer runtime, and the disk guard applies.",
     )
     b.add_argument("path", nargs="?", help="path relative to the project folder (with --session: inside the session)")
@@ -311,6 +330,12 @@ def build_parser():
     )
     b.add_argument("--archive", action="store_true", help="send a folder as one .tar.gz")
     b.add_argument(
+        "--note",
+        metavar="TEXT",
+        help="what these files are, why they were made and what to do next (one to three sentences, up to 500 "
+        "characters); kept in the session manifest for later sessions. Required on a cloud runtime",
+    )
+    b.add_argument(
         "--label",
         metavar="TEXT",
         help="a short label for this session, set on first use (letters, digits, '-', '_', '.'; up to 60)",
@@ -325,7 +350,8 @@ def build_parser():
         parents=[common, timeout, proj, transfer],
         help="list the sessions in the box, newest first (read-only, any runtime)",
         description="List the session namespaces on the sessions side, newest first: id, label, runtime, git "
-        "branch and short commit, file count, total size and when it was last updated. Reads one listing of "
+        "branch and short commit, file count, total size and when it was last updated, with the session's note "
+        "under it (up to 200 characters; --json has the whole note). Reads one listing of "
         "the sessions side and each listed session's manifest; older namespaces without a manifest are "
         "listed from their files. Uses the committed index when the transfer program is missing.",
     )

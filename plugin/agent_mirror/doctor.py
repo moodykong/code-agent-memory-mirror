@@ -12,7 +12,7 @@ from agent_mirror.install import Installer, link_state, memory_link_path
 from agent_mirror.links import describe
 from agent_mirror.projects import discover_projects
 from agent_mirror.runtime import AGENT_NAMES, CLOUD_RUNTIMES, detect_runtime
-from agent_mirror.util import expand, git, is_git_toplevel, out, read_text, tilde, upstream
+from agent_mirror.util import expand, git, git_refusal, is_git_toplevel, out, read_text, tilde, upstream
 
 
 def claude_md_state(store):
@@ -94,9 +94,17 @@ def cmd_doctor(args, ctx):
     plat = ctx.plat
     runtime = detect_runtime()
     out("agent-mirror %s (plugin %s)" % (__version__, PLUGIN_ROOT))
+    refusal = git_refusal(os.path.dirname(PLUGIN_ROOT), args.timeout)
+    if refusal:
+        out("  PROBLEM  the agent-mirror clone: %s" % refusal)
     out("runtime: %s" % runtime)
     cfg_path = plat.config_file()
-    out("config: %s (%s)" % (tilde(cfg_path), "found" if os.path.isfile(cfg_path) else "missing"))
+    out(
+        "config: %s (%s)%s"
+        % (tilde(cfg_path), "found" if os.path.isfile(cfg_path) else "missing", plat.disk_note(cfg_path))
+    )
+    if plat.store_python():
+        out("cache: %s%s" % (tilde(plat.cache_dir()), plat.disk_note(plat.cache_dir())))
     store = ctx.store_or_none()
     if store is None:
         out("store: none. Run `agent-mirror init-store PATH` (or --adopt an existing store), or pass --store")
@@ -127,7 +135,11 @@ def cmd_doctor(args, ctx):
                 ahead = ", %s ahead / %s behind (as of the last fetch)" % tuple(counts.split())
         out("  git: branch %s, upstream %s, %s%s" % (branch.strip() or "?", up or "none", state, ahead))
     else:
-        out("  git: not a git clone (sync needs one)")
+        refusal = git_refusal(store.root, args.timeout)
+        if refusal:
+            out("  git: PROBLEM  %s" % refusal)
+        else:
+            out("  git: not a git clone (sync needs one)")
     out("  CLAUDE.md: %s" % claude_md_state(store))
     agents = [args.agent] if args.agent else list(AGENT_NAMES)
     d = discover_projects(ctx, args.project, args.project_path)

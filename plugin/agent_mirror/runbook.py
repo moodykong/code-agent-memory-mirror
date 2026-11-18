@@ -35,7 +35,8 @@ PRODUCTS = {
 }
 PROBE_COMMAND = (
     "cd <clone> && agent-mirror probe --full > probe_output.txt 2>&1 && "
-    "agent-mirror box send probe_output.txt --label first-probe"
+    'agent-mirror box send probe_output.txt --label first-probe --note "Report of agent-mirror probe --full from '
+    'the first session in this environment; read it before changing the cloud setup."'
 )
 
 

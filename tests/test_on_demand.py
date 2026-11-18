@@ -204,7 +204,14 @@ class AzureArchiveTest(ArchiveTestBase):
         write(self.p("temporary", "run", "a.csv"), "1\n")
         write(self.p("temporary", "run", ".env"), "S=1\n")
         rc, out = self.box_run(
-            "box", "send", "temporary/run", "--archive", env={"AGENT_RUNTIME": "codex-cloud"}, az=self.az()
+            "box",
+            "send",
+            "temporary/run",
+            "--archive",
+            "--note",
+            "One run.",
+            env={"AGENT_RUNTIME": "codex-cloud"},
+            az=self.az(),
         )
         self.assertEqual(rc, 0, out)
         outbound = os.path.join(self.root, "out-box", "demo")

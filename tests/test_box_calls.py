@@ -27,6 +27,9 @@ CEILING = {
     "index": 4,  # shared listing, sessions listing, batched manifest read (azure: plus the owners line)
 }
 PRUNE_CEILING = {"rclone": 5, "azure": 8}  # listing, manifests, delete (azure: one per namespace), (rmdirs), check
+# a cloud session start lists the newest sessions with their notes (0.5.3): one listing, one batched manifest read
+# (azure: plus `az account show`, as every box command on a cloud runtime signs in first)
+START_CEILING = {"rclone": 2, "azure": 3}
 
 
 def sid_of(i, runtime="codex-cloud"):
@@ -116,6 +119,20 @@ class CallsMixin:
             ceiling = PRUNE_CEILING[self.name] if cmd.startswith("prune") else CEILING[cmd]
             self.assertLessEqual(n, ceiling, "%s: %d calls" % (cmd, n))
         print("\n%s calls with 3 and 30 sessions: %s" % (self.name, json.dumps(small, sort_keys=True)))
+
+    def test_cloud_session_start_lists_like_box_sessions(self):
+        got = {}
+        for n in (3, 30):
+            self.plant(n)
+            before = self.calls()
+            env = dict(self.tool_env(), AGENT_RUNTIME="claude-cloud")
+            rc, out = self.run_tool("session-start", "--project", "demo", "--project-path", self.project, env=env)
+            self.assertEqual(rc, 0, out)
+            self.assertIn("box of demo: the newest 5 of %d sessions, from the box" % (n + 5), out)
+            got[n] = self.calls() - before
+        self.assertEqual(got[3], got[30])
+        self.assertLessEqual(got[30], START_CEILING[self.name])
+        print("\n%s calls of a cloud session start with 3 and 30 sessions: %d" % (self.name, got[30]))
 
     def folders(self, n):
         remove_tree(self.p("ws"))

@@ -66,14 +66,62 @@ def real_inside(path, root):
     return p == r or p.startswith(r.rstrip(os.sep) + os.sep)
 
 
+# The Microsoft Store Python is a packaged app: Windows keeps the new files and folders it writes under
+# %LOCALAPPDATA% and %APPDATA% in the package's own folder, %LOCALAPPDATA%\Packages\<family>\LocalCache\
+# Local (and ...\Roaming), and shows them at the usual place to that Python only. Other programs (Task
+# Scheduler, an editor, the agent app) see them only at the package path. Its executable is the app alias
+# ...\WindowsApps\<family>\python.exe, and sys.base_prefix is the install folder ...\WindowsApps\<full name>.
+# family: PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0
+# full name: PythonSoftwareFoundation.Python.3.12_3.12.2032.0_x64__qbz5n2kfra8p0 (name_version_arch_resource_publisher)
+STORE_PYTHON_FOLDER = re.compile(
+    r"^(PythonSoftwareFoundation\.Python\.\d+(?:\.\d+)*)_(?:[0-9.]+_[A-Za-z0-9]*_[^_]*_)?([A-Za-z0-9]+)$", re.I
+)
+
+
+def store_python_family(executable, base_prefix):
+    """The package family name of a Microsoft Store Python, from its executable or base prefix, or None."""
+    for path in (executable, base_prefix):
+        for part in re.split(r"[\\/]+", str(path or "")):
+            m = STORE_PYTHON_FOLDER.match(part)
+            if m:
+                return "%s_%s" % (m.group(1), m.group(2))
+    return None
+
+
+def packaged_location(path, local_appdata, roaming_appdata, family):
+    """Where a Microsoft Store Python keeps a file it writes at path (ntpath rules), or None.
+
+    None when there is no package family, or path is not under %LOCALAPPDATA% or %APPDATA% (or is already
+    inside %LOCALAPPDATA%\\Packages).
+    """
+    if not family or not local_appdata:
+        return None
+    n = ntpath
+
+    def inside(p, root):
+        a, r = n.normcase(n.normpath(p)), n.normcase(n.normpath(root))
+        return a == r or a.startswith(r.rstrip("\\") + "\\")
+
+    if inside(path, n.join(local_appdata, "Packages")):
+        return None
+    cache = n.join(local_appdata, "Packages", family, "LocalCache")
+    for root, sub in ((local_appdata, "Local"), (roaming_appdata, "Roaming")):
+        if root and inside(path, root):
+            rel = n.relpath(n.normpath(path), n.normpath(root))
+            return n.join(cache, sub) if rel == "." else n.join(cache, sub, rel)
+    return None
+
+
 class Platform:
-    def __init__(self, name=None, env=None):
+    def __init__(self, name=None, env=None, python=None):
         self.name = normalize_platform(name or sys.platform)
         self.env = os.environ if env is None else env
         self.windows = self.name == "win32"
         self.path = ntpath if self.windows else posixpath
         override = (self.env.get("AGENT_MIRROR_HOME") or "").strip()
         self.mirror_home = self.path.normpath(override) if override else None
+        # (executable, base prefix) of the Python running this program; tests pass other values
+        self.python = python or (sys.executable, getattr(sys, "base_prefix", sys.prefix))
 
     def join(self, *parts):
         return self.path.join(*parts)
@@ -179,6 +227,41 @@ class Platform:
         if self.mirror_home:
             return self.join(self.mirror_home, ".tmp")
         return tempfile.gettempdir()
+
+    # the Microsoft Store Python's package folder ------------------------------------
+
+    def store_python(self):
+        """The package family name when a Microsoft Store Python runs this program on Windows, else None
+        (also with AGENT_MIRROR_HOME, where no location is under the real AppData folders)."""
+        if not self.windows or self.mirror_home:
+            return None
+        return store_python_family(*self.python)
+
+    def packaged(self, path):
+        """Where the Microsoft Store Python keeps what it writes at path, or None (any other Python, or a
+        path outside AppData)."""
+        family = self.store_python()
+        if not family:
+            return None
+        return packaged_location(str(path), self._var("LOCALAPPDATA"), self._var("APPDATA"), family)
+
+    def disk_note(self, path):
+        """' (on disk at <package path> ...)' for a path this program writes, when the Microsoft Store Python
+        keeps it in its package folder; '' otherwise (and always on other Pythons).
+
+        Checked by what exists: inside that Python the usual path looks present either way, so the package
+        path decides. A file that exists only at the usual path was there before (Windows changes existing
+        files in place). When neither exists yet, the package path is where Windows puts new files.
+        """
+        real = self.packaged(path)
+        if not real:
+            return ""
+        why = "the Microsoft Store Python keeps what it writes under AppData there; other programs find it only there"
+        if os.path.lexists(real):
+            return " (on disk at %s: %s)" % (real, why)
+        if os.path.lexists(str(path)):
+            return ""
+        return " (will be on disk at %s: %s)" % (real, why)
 
     def locations(self):
         """Every home-like location agent-mirror may read or write, by name."""

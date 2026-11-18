@@ -18,6 +18,7 @@ from helpers import setUpModule  # noqa: F401 (the sandbox guard runs first)
 from helpers import FAKE_RCLONE, ToolTest, install_fake, read, write
 
 ID_RX = r"(claude|codex)-(local|cloud)-\d{8}T\d{6}Z-[0-9a-f]{6}"
+NOTE = ("--note", "Results of one test run; fetch them to compare with the next run.")  # a cloud send needs one
 
 
 def read_bytes(path):
@@ -131,15 +132,15 @@ class SessionsMixin:
         self.assertNotIn(sid3, (sid, sid2))
         self.assertIn("/.agent-mirror/", read(self.p(".git", "info", "exclude")))
         # a cloud session on a new machine is a new session; on the same machine it is kept
-        rc, out = self.box("send", "results/r1.csv", AGENT_RUNTIME="claude-cloud")
+        rc, out = self.box("send", "results/r1.csv", *NOTE, AGENT_RUNTIME="claude-cloud")
         cloud = self.local_session()["id"]
         self.assertTrue(cloud.startswith("claude-cloud-"))
-        rc, out = self.box("send", "results/r1.csv", AGENT_RUNTIME="claude-cloud")
+        rc, out = self.box("send", "results/r1.csv", *NOTE, AGENT_RUNTIME="claude-cloud")
         self.assertEqual(self.local_session()["id"], cloud)
         rec = self.local_session()
         rec["host"] = "another-machine"
         write(os.path.join(self.project, ".agent-mirror", "session.json"), json.dumps(rec))
-        rc, out = self.box("send", "results/r1.csv", AGENT_RUNTIME="claude-cloud")
+        rc, out = self.box("send", "results/r1.csv", *NOTE, AGENT_RUNTIME="claude-cloud")
         self.assertNotEqual(self.local_session()["id"], cloud)
         rc, out = self.box("send", "results/r1.csv", "--label", "bad label!")
         self.assertEqual(rc, 2, out)
@@ -152,11 +153,11 @@ class SessionsMixin:
         env = dict(self.tool_env(), AGENT_RUNTIME="claude-cloud")
 
         def send(*args, cwd=above):
-            return self.run_tool("box", "send", *args, cwd=cwd, env=env)
+            return self.run_tool("box", "send", *(args + NOTE), cwd=cwd, env=env)
 
         write(self.p("results", "r1.csv"), "1\n")
         # what probe --full does: the clone it discovered, by --project and --project-path
-        rc, out = self.run_on(self.project, "box", "send", "results/r1.csv", AGENT_RUNTIME="claude-cloud")
+        rc, out = self.run_on(self.project, "box", "send", "results/r1.csv", *NOTE, AGENT_RUNTIME="claude-cloud")
         self.assertEqual(rc, 0, out)
         sid = self.local_session()["id"]
         # --project without --project-path, from the folder above: the clone of demo, the same namespace
@@ -217,10 +218,12 @@ class SessionsMixin:
         write(os.path.join(a, "results", "exp-a.csv"), "a\n")
         write(os.path.join(b, "results", "exp-b", "data.txt"), "b data\n")
         write(os.path.join(b, "results", "exp-b", "more", "m.txt"), "more\n")
-        rc, out = self.run_on(a, "box", "send", "results/exp-a.csv", "--label", "exp-a", AGENT_RUNTIME="claude-cloud")
+        rc, out = self.run_on(
+            a, "box", "send", "results/exp-a.csv", "--label", "exp-a", *NOTE, AGENT_RUNTIME="claude-cloud"
+        )
         self.assertEqual(rc, 0, out)
         rc, out = self.run_on(
-            b, "box", "send", "results/exp-b", "--archive", "--label", "exp-b", AGENT_RUNTIME="codex-cloud"
+            b, "box", "send", "results/exp-b", "--archive", "--label", "exp-b", *NOTE, AGENT_RUNTIME="codex-cloud"
         )
         self.assertEqual(rc, 0, out)
         sid_a, sid_b = self.local_session(a)["id"], self.local_session(b)["id"]
@@ -299,10 +302,12 @@ class SessionsMixin:
         write(os.path.join(c, "runs", "run-7", "metrics.json"), '{"m": 1}\n')
         write(os.path.join(c, "temporary", "keep", "fig.png"), "png\n")
         write(os.path.join(c, "notes", "n.txt"), "n\n")
-        rc, out = self.run_on(c, "box", "send", "runs/run-7", "--archive", "--label", "run7", AGENT_RUNTIME="claude-cloud")
+        rc, out = self.run_on(
+            c, "box", "send", "runs/run-7", "--archive", "--label", "run7", *NOTE, AGENT_RUNTIME="claude-cloud"
+        )
         self.assertEqual(rc, 0, out)
         for path in ("temporary/keep", "notes"):
-            rc, out = self.run_on(c, "box", "send", path, AGENT_RUNTIME="claude-cloud")
+            rc, out = self.run_on(c, "box", "send", path, *NOTE, AGENT_RUNTIME="claude-cloud")
             self.assertEqual(rc, 0, out)
         sid = self.local_session(c)["id"]
         self.as_machine("desk-a", ID_A)
@@ -342,9 +347,11 @@ class SessionsMixin:
     def test_prune(self):
         c = self.checkout("cloud-c")
         write(os.path.join(c, "temporary", "t.txt"), "t\n")
-        rc, out = self.run_on(c, "box", "send", "temporary/t.txt", "--label", "keepme", AGENT_RUNTIME="claude-cloud")
+        rc, out = self.run_on(
+            c, "box", "send", "temporary/t.txt", "--label", "keepme", *NOTE, AGENT_RUNTIME="claude-cloud"
+        )
         keep = self.local_session(c)["id"]
-        rc, out = self.run_on(c, "box", "send", "temporary/t.txt", "--new-session", AGENT_RUNTIME="claude-cloud")
+        rc, out = self.run_on(c, "box", "send", "temporary/t.txt", "--new-session", *NOTE, AGENT_RUNTIME="claude-cloud")
         drop = self.local_session(c)["id"]
         write(self.sessions_path("codex-cloud-20200101T000000Z", "old.txt"), "old\n")
         write(self.shared_path("temporary", "shared.txt"), "shared\n")
@@ -385,7 +392,7 @@ class SessionsMixin:
         c = self.checkout("cloud-c")
         write(os.path.join(c, "results", "r.csv"), "from the session\n")
         write(os.path.join(c, "results", "new.csv"), "new\n")
-        rc, out = self.run_on(c, "box", "send", "results", "--label", "over", AGENT_RUNTIME="claude-cloud")
+        rc, out = self.run_on(c, "box", "send", "results", "--label", "over", *NOTE, AGENT_RUNTIME="claude-cloud")
         self.assertEqual(rc, 0, out)
         rc, out = self.box("fetch", "--session", "over", "--into", ".")
         self.assertEqual(rc, 0, out)
@@ -397,9 +404,11 @@ class SessionsMixin:
         a, b, c = self.checkout("cloud-a"), self.checkout("cloud-b"), self.checkout("cloud-c")
         write(os.path.join(a, "results", "a", "summary.json"), '{"session": "a"}\n')
         write(os.path.join(b, "results", "b", "plots", "p.txt"), "plot b\n")
-        rc, out = self.run_on(a, "box", "send", "results/a", "--label", "exp-a", AGENT_RUNTIME="claude-cloud")
+        rc, out = self.run_on(a, "box", "send", "results/a", "--label", "exp-a", *NOTE, AGENT_RUNTIME="claude-cloud")
         self.assertEqual(rc, 0, out)
-        rc, out = self.run_on(b, "box", "send", "results/b", "--archive", "--label", "exp-b", AGENT_RUNTIME="codex-cloud")
+        rc, out = self.run_on(
+            b, "box", "send", "results/b", "--archive", "--label", "exp-b", *NOTE, AGENT_RUNTIME="codex-cloud"
+        )
         self.assertEqual(rc, 0, out)
         rc, out = self.run_on(c, "box", "sessions", "--json", AGENT_RUNTIME="claude-cloud")
         self.assertEqual(rc, 0, out)
@@ -479,7 +488,9 @@ class AzureSessionsTest(SessionsMixin, ToolTest):
         shutil.rmtree(self.p("runs"))
         c = self.checkout("cloud-c")
         write(os.path.join(c, "runs", "run-1", "c.txt"), "c\n")
-        rc, out = self.run_on(c, "box", "send", "runs/run-1/c.txt", "--label", "more", AGENT_RUNTIME="claude-cloud")
+        rc, out = self.run_on(
+            c, "box", "send", "runs/run-1/c.txt", "--label", "more", *NOTE, AGENT_RUNTIME="claude-cloud"
+        )
         self.assertEqual(rc, 0, out)
         rc, out = self.box("promote", "--session", "more", "runs/run-1/c.txt")
         self.assertEqual(rc, 2, out)
@@ -581,9 +592,9 @@ class RcloneRealSessionsTest(ToolTest):
             e.update(extra)
             return self.run_tool(*args, "--project", "demo", "--project-path", path, env=e)
 
-        rc, out = run(a, "box", "send", "temporary/res", "--label", "real", AGENT_RUNTIME="claude-cloud")
+        rc, out = run(a, "box", "send", "temporary/res", "--label", "real", *NOTE, AGENT_RUNTIME="claude-cloud")
         self.assertEqual(rc, 0, out)
-        rc, out = run(a, "box", "send", "temporary/res", "--archive", AGENT_RUNTIME="claude-cloud")
+        rc, out = run(a, "box", "send", "temporary/res", "--archive", *NOTE, AGENT_RUNTIME="claude-cloud")
         self.assertEqual(rc, 0, out)
         sid = json.loads(read(os.path.join(a, ".agent-mirror", "session.json")))["id"]
         self.assertEqual(os.listdir(sessions), [sid])

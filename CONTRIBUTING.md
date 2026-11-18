@@ -28,7 +28,9 @@ and it changed the real user profile. Since then:
    environment's home.
 6. **Fake tools only.** `az`, `rclone` and clipboard tools are fakes written by `helpers.install_fake`
    (a Python script, plus a `.cmd` shim on Windows). Nothing reaches a network, a cloud account, a real
-   scheduler or a real clipboard.
+   scheduler or a real clipboard. A cloud `session-start` lists the box only with a transfer program
+   inside the sandbox (the fakes): a real `az` or `rclone` elsewhere on PATH is never started by it in a
+   test run, and it reads the committed index instead.
 
 ## Running the tests
 

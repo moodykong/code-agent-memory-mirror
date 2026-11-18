@@ -2,7 +2,12 @@
 
     {"schema": 1,
      "folders": {"<folder>": {"machine_id": "...", "machine_name": "...", "since": "...",
-                              "fingerprint": "...", "updated": "..."}}}
+                              "fingerprint": "...", "updated": "...",
+                              "note": "...", "note_updated": "..."}}}
+
+note and note_updated (0.5.3, optional) are the folder's one-line note, set by its owning machine with
+`box note FOLDER TEXT` (notes.py). A push or take-over keeps every key of an entry it does not set itself,
+so the note stays with the folder; a release removes the entry and its note.
 
 A folder is a folder unit (units.py): an archived folder or an include folder. `box push` claims a
 folder nobody owns (recorded after its upload succeeded), uploads the folders this machine owns, and
@@ -27,6 +32,7 @@ import shutil
 
 from agent_mirror import __version__, machine
 from agent_mirror.box import archive, units
+from agent_mirror.box.notes import NOTE_KEYS, shown
 from agent_mirror.box.sides import side_for
 from agent_mirror.config import load_user_config
 from agent_mirror.platforms import current
@@ -216,9 +222,11 @@ def fresh_state(side, s, timeout, legacy_base=None, list_timeout=None):
 def update(side, s, mid, changes, timeout, convert=False, legacy_base=None, list_timeout=None):
     """Apply this machine's changes to _owners.json without losing anyone else's.
 
-    changes: {folder: ("set", entry, mode)} with mode "claim", "update" or "take-over", or
-    {folder: ("remove", None, "release")}. A claim or update is not applied when the folder now
-    belongs to another machine (it is returned as a conflict); a take-over always is.
+    changes: {folder: ("set", entry, mode)} with mode "claim", "update" or "take-over",
+    {folder: ("remove", None, "release")}, or {folder: ("note", text or None, "note")}. A claim, update
+    or note is not applied when the folder now belongs to another machine (it is returned as a conflict,
+    with None as the owner when nobody owns it now); a take-over always is. A set keeps the keys of the
+    current entry it does not set itself (the folder's note, and keys a newer version wrote).
     legacy_base: the State read before this command changed anything, when it came from _writer.json.
     Returns (ok, problem or None, applied {folder: entry or None}, conflicts [(folder, owner entry)]).
     """
@@ -240,10 +248,25 @@ def update(side, s, mid, changes, timeout, convert=False, legacy_base=None, list
                 elif cur:
                     conflicts.append((name, cur))
                 continue
+            if op == "note":
+                if not mine:
+                    conflicts.append((name, cur))
+                    continue
+                new = dict(cur)
+                for key in NOTE_KEYS:
+                    new.pop(key, None)
+                if entry:
+                    new.update({"note": entry, "note_updated": utc_now()})
+                if (cur.get("note") or None) != (entry or None):
+                    folders[name] = new
+                    applied[name] = new
+                continue
             if mode == "take-over" or cur is None or mine:
                 new = dict(entry)
                 if mine and cur.get("since"):
                     new["since"] = cur["since"]  # already this machine's: it owns it since then
+                for key, value in (cur or {}).items():
+                    new.setdefault(key, value)  # the note, and anything a newer version recorded
                 if cur != new:
                     folders[name] = new
                     applied[name] = new
@@ -630,6 +653,7 @@ def cmd_owners(args, s, runtime, backend):
                 "here": here,
                 "local": local,
                 "files_here": sm["files"] if sm else 0,
+                "note": (cur or {}).get("note") or None,
             }
         )
     if args.json:
@@ -655,6 +679,8 @@ def cmd_owners(args, s, runtime, backend):
             "%s%s" % (describe_owner(r["owner"]), " (this machine)" if r["mine"] else "") if r["owner"] else "-"
         )
         out("  %-32s %-44s here: %-3s local vs owner: %s" % (r["folder"], owner, "yes" if r["here"] else "no", r["local"]))
+        if r["note"]:
+            out("      note: %s" % shown(r["note"]))
     out(
         "local vs owner: same, different, absent (not here), fetched (here only as fetched from the box, "
         "unchanged), unknown (no fingerprint recorded), unowned (the next push from here claims it)"

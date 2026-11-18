@@ -5,6 +5,7 @@ skills, the legacy whole-folder link, choices files, waiting units, --yes-defaul
 before adopt, the memory merge, recorded choices, the machine profile and its sync.
 """
 
+import hashlib
 import json
 import os
 import shutil
@@ -26,6 +27,19 @@ from helpers import (
 )
 
 FAKE_KEY = "s" + "k-" + "Zq7" * 8  # key-shaped, built at runtime
+
+
+# the two lines of the template AGENTS.md of 0.5.0 to 0.5.2 that 0.5.3 changed (box notes)
+OLD_SESSIONS_LINE = (
+    "- Earlier sessions may have produced what the task needs. Run `agent-mirror box sessions` to see their "
+    "results, and fetch one with `agent-mirror box fetch --session <id or label> [path]` (it lands in "
+    "`_sessions/<session id>/`).\n"
+)
+OLD_SEND_LINE = (
+    "- The machine is thrown away after the session. Before finishing, upload anything worth keeping with "
+    "`agent-mirror box send <path> --label <short-name>`; every send of this session goes into the same session, "
+    "and later sessions can list and fetch it.\n"
+)
 
 
 class ReconcileBase(ToolTest):
@@ -162,6 +176,15 @@ class PlanCasesTest(ReconcileBase):
             self.assertEqual((u["case"], u["store"]["state"]), ("first-setup", "template"))
         write(self.s("AGENTS.md"), older + "- one line of my own\n")
         self.assertEqual(self.case("instructions:claude"), "reconcile")
+        # the template of 0.5.0 to 0.5.2, before the box notes, is a template too
+        v052 = current.replace(sessions_lines[0], OLD_SESSIONS_LINE).replace(sessions_lines[1], OLD_SEND_LINE)
+        self.assertEqual(
+            hashlib.sha256(v052.replace("\r\n", "\n").encode("utf-8")).hexdigest(),
+            "0df14e1567c7e9ff9242b84959bf8c5011b112a388c913089e02a91e60fe5b4d",
+        )
+        write(self.s("AGENTS.md"), v052)
+        u = self.unit(self.plan(), "instructions:claude")
+        self.assertEqual((u["case"], u["store"]["state"]), ("first-setup", "template"))
 
     def test_skill_cases_compared_by_content(self):
         data = self.plan()

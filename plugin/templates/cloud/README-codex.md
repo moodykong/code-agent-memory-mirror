@@ -31,6 +31,10 @@ project name, the store URL, the agent-mirror URL and the runtime marker.
   machine keeps its old setup, so the repair repeats at every session start until the vendor rebuilds it:
   raise the number on the `# revision:` line and save to make it rebuild. If `store.json` pins an
   agent-mirror older than 0.5.2 (no `cloud bootstrap`), the scripts only link the store.
+- Every `agent-mirror session-start` ends with each project's newest box sessions and their notes, and the
+  shared folders that have notes, within `--box-timeout` (20 s by default). `box send` in a cloud session
+  needs `--note "<what these files are and why>"`; pin agent-mirror 0.5.3 or later in `store.json`, since
+  the first-session prompt uses `--note` (`cloud render` warns).
 - UNVERIFIED: whether `agent-mirror sync` can push from the VM product with the access Codex used to check out
   the store. In the legacy container product the script removes the token from the store clone's remote, so
   `sync` cannot push from the agent phase (it keeps the commit local, which is lost with the container); ask

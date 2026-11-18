@@ -67,12 +67,17 @@ def run_az(args, timeout, capture=True, input_text=None):
     return run_transfer(["az"] + list(args), timeout, capture=capture, input_text=input_text)
 
 
-def sign_in(runtime, timeout, dry_run=False):
+def sign_in(runtime, timeout, dry_run=False, deadline=None):
     """On a cloud runtime, sign az in as the service principal if it is not signed in yet.
 
     The secret goes to az on stdin (--password=@-, az reads '@-' as stdin), so it
-    is never on a command line, in a file, or in any output.
+    is never on a command line, in a file, or in any output. deadline (a time.time() value), when
+    given, bounds both calls (a session start lists the box within a short time).
     """
+
+    def limit(default):
+        return default if deadline is None else max(1, int(deadline - time.time()))
+
     if runtime not in CLOUD_RUNTIMES:
         return True
     values = dict((n, os.environ.get(n, "").strip()) for n in SP_VARS)
@@ -85,7 +90,7 @@ def sign_in(runtime, timeout, dry_run=False):
         else:
             out("would run, only if `az account show` fails: %s  (secret on stdin)" % show_cmd(shown))
         return True
-    rc, _, _ = run_az(["account", "show", "--only-show-errors", "-o", "none"], max(timeout, 60))
+    rc, _, _ = run_az(["account", "show", "--only-show-errors", "-o", "none"], limit(max(timeout, 60)))
     if rc == 0:
         return True
     if missing:
@@ -95,7 +100,7 @@ def sign_in(runtime, timeout, dry_run=False):
     login[login.index("$AZURE_CLIENT_ID")] = values["AZURE_CLIENT_ID"]
     login[login.index("$AZURE_TENANT_ID")] = values["AZURE_TENANT_ID"]
     out("signing in: %s  (secret on stdin)" % show_cmd(shown))
-    rc, stdout, stderr = run_az(login, max(timeout, 120), input_text=values["AZURE_CLIENT_SECRET"])
+    rc, stdout, stderr = run_az(login, limit(max(timeout, 120)), input_text=values["AZURE_CLIENT_SECRET"])
     if rc != 0:
         return not az_failed("az login --service-principal", rc, stdout, stderr)
     return True

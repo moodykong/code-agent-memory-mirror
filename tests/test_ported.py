@@ -539,7 +539,15 @@ class PortedTest(ToolTest):
     def test_send_destination_and_refusals(self):
         write(self.p("temporary", "result.csv"), "x\n")
         write(self.p("temporary", "scratch", "x.txt"), "x\n")
-        rc, out = self.box_run("box", "send", "temporary/result.csv", "--dry-run", env={"AGENT_RUNTIME": "codex-cloud"})
+        rc, out = self.box_run(
+            "box",
+            "send",
+            "temporary/result.csv",
+            "--dry-run",
+            "--note",
+            "One result.",
+            env={"AGENT_RUNTIME": "codex-cloud"},
+        )
         self.assertEqual(rc, 0, out)
         self.assertRegex(
             out,
@@ -592,7 +600,7 @@ class PortedTest(ToolTest):
             "FAKE_AZ_SECRET": secret,
             "FAKE_AZ_ACCOUNT_SHOW_RC": "1",
         }
-        rc, out = self.box_run("box", "send", "temporary/result.csv", env=sp)
+        rc, out = self.box_run("box", "send", "temporary/result.csv", "--note", "One result.", env=sp)
         self.assertEqual(rc, 0, out)
         login = self.az_calls("login")[0]
         self.assertTrue(login["stdin_is_secret"])
@@ -604,12 +612,14 @@ class PortedTest(ToolTest):
         self.assertNotIn(secret, read(self.az_log))
         self.assertNotIn(secret, out)
 
-        rc, out = self.box_run("box", "send", "temporary/result.csv", env=dict(sp, FAKE_AZ_LOGIN_FAIL="1"))
+        rc, out = self.box_run(
+            "box", "send", "temporary/result.csv", "--note", "One result.", env=dict(sp, FAKE_AZ_LOGIN_FAIL="1")
+        )
         self.assertEqual(rc, 1, out)
         self.assertIn("invalid secret ***", out)
         self.assertNotIn(secret, out)
 
-        rc, out = self.box_run("box", "send", "temporary/result.csv", "--dry-run", env=sp)
+        rc, out = self.box_run("box", "send", "temporary/result.csv", "--dry-run", "--note", "One result.", env=sp)
         self.assertEqual(rc, 0, out)
         self.assertIn("--username '$AZURE_CLIENT_ID' --tenant '$AZURE_TENANT_ID' --password=@-", out)
         self.assertNotIn(secret, out)

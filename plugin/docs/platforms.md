@@ -101,9 +101,21 @@ commands, enabling a scheduled task, and the real clipboard tools.
 | Claude skills | `<claude home>/skills` | `<claude home>\skills` |
 | companion repos (cloud) | `~/companions` | `%USERPROFILE%\companions` |
 | agent-mirror config | `${XDG_CONFIG_HOME:-~/.config}/agent-mirror/config.json` | `%APPDATA%\agent-mirror\config.json` |
-| hook log | Linux `${XDG_CACHE_HOME:-~/.cache}/agent-mirror/sync.log`, macOS `~/Library/Caches/agent-mirror/sync.log` | `%LOCALAPPDATA%\agent-mirror\sync.log` |
+| hook log | Linux `${XDG_CACHE_HOME:-~/.cache}/agent-mirror/sync.log`, macOS `~/Library/Caches/agent-mirror/sync.log` | `%LOCALAPPDATA%\agent-mirror\sync.log` (Microsoft Store Python: see below) |
 | backups | `~/.agent-mirror-backups/<timestamp>/` | `%USERPROFILE%\.agent-mirror-backups\<timestamp>\` |
 | with `AGENT_MIRROR_HOME` set | everything under it; config `<dir>/.config/agent-mirror` | the same, on Windows too |
+
+The Microsoft Store Python is a packaged app: Windows keeps the new files and folders it writes under
+`%LOCALAPPDATA%` and `%APPDATA%` in `%LOCALAPPDATA%\Packages\PythonSoftwareFoundation.Python.<version>_<id>\LocalCache\Local`
+(and `...\LocalCache\Roaming`), and shows them at the usual place to that Python only. Other programs (Task
+Scheduler, an editor, the agent app) find `%LOCALAPPDATA%\agent-mirror\sync.log` only at the package path.
+Since 0.5.3 agent-mirror recognises that Python (its executable or `sys.base_prefix` is in a
+`PythonSoftwareFoundation.Python...` package folder) and, where it prints the config, cache or log path
+(`doctor`, `probe`, `timer install`, `sync --log`), also prints the real location: the package path when a
+file is there, nothing when the file was at the usual place before (Windows changes existing files in
+place), and "will be on disk at" when nothing was written yet. Behaviour with any other Python is
+unchanged. The path computation is tested with made-up paths on every OS; UNVERIFIED on a real machine with
+that Python since this change. To avoid the redirection, use the python.org installer or `uv python install`.
 
 UNVERIFIED (macOS): Claude Code and Codex use `~/.claude` and `~/.codex` there too.
 UNVERIFIED (Windows): Codex uses `%USERPROFILE%\.codex` and reads `AGENTS.md` and `~/.agents/skills`
@@ -113,6 +125,22 @@ Skills folders: agent-mirror links store skills one by one into the shared folde
 and into each selected agent's own folder. Only Claude has its own folder in this model; Codex reads the
 shared one. UNVERIFIED: older Codex versions that read `~/.codex/skills` instead; agent-mirror neither
 reads nor writes that folder.
+
+## git and folders owned by Administrators
+
+A store or agent-mirror clone made from an elevated (administrator) shell belongs to the Administrators
+group. git 2.35.2 and later then refuse it when started without elevation (Task Scheduler, the agent app):
+`fatal: detected dubious ownership in repository at '...'`. Since 0.5.3 `sync`, `session-start`, the cloud
+self-update, `cloud bootstrap`, `init-store` and `probe` say so in one line with the command that allows it,
+and `doctor` reports it as a PROBLEM for the store and the agent-mirror clone:
+
+```
+error: git refuses C:\Users\you\agent-store: "detected dubious ownership" (the folder belongs to another user or group, such as Administrators when it was cloned from an elevated shell). Allow it once with: git config --global --add safe.directory C:/Users/you/agent-store
+```
+
+agent-mirror never changes your git config itself. The path in the command is the one git names, with
+forward slashes. Tested with git's own `GIT_TEST_ASSUME_DIFFERENT_OWNER` switch on Linux; the message
+format is from a real Windows 11 machine.
 
 ## Links
 

@@ -49,6 +49,10 @@ settings never means pasting it again.
 - A changed store URL, a changed `tool.repo` or a different project needs a new paste. New hosts and new
   variable names (re-render to see them) still go on the settings page.
 - `agent-mirror probe` shows the last session start's steps with their times and exit status.
+- Every session start ends with each project's newest box sessions and their notes, and the shared folders
+  that have notes, within `session-start --box-timeout` (20 s by default); it prints one line when it cannot
+  list. `box send` in a cloud session needs `--note "<what these files are and why>"`; pin agent-mirror
+  0.5.3 or later in `store.json`, since the first-session prompt uses `--note` (`cloud render` warns).
 
 ## Notes
 

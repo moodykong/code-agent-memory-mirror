@@ -7,6 +7,7 @@ import shlex
 
 from agent_mirror.box.archive import read_local_toc
 from agent_mirror.box.local import FetchRecord, free_bytes, human, min_free
+from agent_mirror.box.notes import index_folder_notes, shown
 from agent_mirror.box.rules import clean_rel
 from agent_mirror.box.units import archive_unit_of
 from agent_mirror.projects import box_project
@@ -82,8 +83,13 @@ def cmd_ls(args, s):
     files, archives = load_index(index_path)
     arch = dict((a["path"], a) for a in archives)
     owners, writer = index_owners(index_path)
+    noted = index_folder_notes(index_path)
     when = datetime.datetime.fromtimestamp(os.path.getmtime(index_path)).strftime("%Y-%m-%d %H:%M")
     out("box index %s (written %s): %d files, %d archived folders" % (index_path, when, len(files), len(archives)))
+    for folder in sorted(noted):
+        # the folder listed, or a folder that holds it (the top folder "." holds everything)
+        if folder == "." or (rel and (rel == folder or rel.startswith(folder + "/"))):
+            out("note on %s: %s" % (folder if folder != "." else "the top folder", shown(noted[folder])))
     unit = None
     if rel:
         found = archive_unit_of(rel, s.get("archives") or [])
@@ -146,7 +152,7 @@ def cmd_ls(args, s):
         return 1
     for name in sorted(rows):
         r = rows[name]
-        shown = prefix + name
+        path = prefix + name
         if r["dir"]:
             status = "%d/%d" % (r["here"], r["files"]) if check else "?"
             if r["kind"] == "archive":
@@ -157,13 +163,16 @@ def cmd_ls(args, s):
                 note = "  %d files" % r["files"]
             if r["large"]:
                 note += ", %d large (fetched only when named or with --all)" % r["large"]
-            note += owner_note(shown, owners, writer)
-            out("  %-9s %10s  %s/%s" % (status, human(r["bytes"]), shown, note))
+            note += owner_note(path, owners, writer)
+            out("  %-9s %10s  %s/%s" % (status, human(r["bytes"]), path, note))
+            for folder in sorted(f for f in noted if f == path or f.startswith(path + "/")):
+                where = "" if folder == path else " on %s" % folder
+                out("  %-9s %10s    note%s: %s" % ("", "", where, shown(noted[folder])))
         else:
             note = ""
             if r["kind"] == "large":
-                note = "  large: agent-mirror box fetch %s" % shlex.quote(shown)
-            out("  %-9s %10s  %s%s" % (presence(project, shown, r["bytes"]), human(r["bytes"]), shown, note))
+                note = "  large: agent-mirror box fetch %s" % shlex.quote(path)
+            out("  %-9s %10s  %s%s" % (presence(project, path, r["bytes"]), human(r["bytes"]), path, note))
     out("status: here = present locally with the same size; n/m = files of a folder present locally")
     return 0
 

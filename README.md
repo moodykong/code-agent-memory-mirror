@@ -64,7 +64,11 @@ On another machine, see "Join a second machine" below. To undo everything: `agen
 uninstall` and `agent-mirror uninstall` (it puts back whatever the links replaced).
 
 Windows (UNVERIFIED): clone the repo, add `...\code-agent-memory-mirror\plugin\bin` to `PATH` (it holds
-`agent-mirror.cmd`), and use the same commands. See [plugin/docs/platforms.md](plugin/docs/platforms.md).
+`agent-mirror.cmd`), and use the same commands. Clone the store and agent-mirror from a normal (not
+elevated) shell: git refuses folders owned by Administrators when it runs without elevation, and
+agent-mirror then prints the `git config --global --add safe.directory ...` line to run. With the Microsoft
+Store Python, files under AppData land in that Python's package folder; agent-mirror prints where. See
+[plugin/docs/platforms.md](plugin/docs/platforms.md).
 
 Cloud sessions: write `projects/my-project/env.json` in the store (start from
 `projects/_example/env.json`), run `agent-mirror cloud render --project my-project`, and follow the
@@ -112,17 +116,18 @@ on the vendor's settings page.
 | `machine [--name NAME]` | show this machine's id, name and recorded choices, or set its name |
 | `uninstall` | remove the links into the store and restore the backups |
 | `doctor` | runtime, config, store state, every expected link, hooks, tools, box settings |
-| `session-start [--repair-timeout 900]` | pull the store; on a cloud runtime also update agent-mirror to the pinned ref, repair setup drift (run the setup steps again when the store changed them), dependency sync, project start commands, install and companion repo links; print the memory index path; record each step's time and status in `<cache>/session-start.jsonl` |
+| `session-start [--repair-timeout 900] [--box-timeout 20]` | pull the store; on a cloud runtime also update agent-mirror to the pinned ref, repair setup drift (run the setup steps again when the store changed them), dependency sync, project start commands, install and companion repo links; print the memory index path; on a cloud runtime list each project's newest box sessions with their notes and the shared folders that have notes; record each step's time and status in `<cache>/session-start.jsonl` |
 | `sync [--message MSG]` | adopt stray memory files (for projects this machine linked), secret scan, commit, `pull --rebase`, push (never force) |
 | `probe [--tcp HOST:PORT] [--url URL]`, `probe --full` | reachability and machine checks, and the last session-start's step times; `--full` is the long first-session report |
 | `hook memory-write` | hook handler: runs `sync` when the file just written is a store memory, skill or instruction file |
 | `hooks install\|uninstall\|status [--agent claude]` | add or remove the three Claude Code hooks in its user settings, keeping everything else |
 | `timer install\|uninstall\|status [--minutes 30]` | periodic `sync`: systemd user timer, launchd agent or Windows scheduled task |
 | `box push [--only FOLDER]... [--take-over [FOLDER]]... [--delete]` | upload the box folders this machine owns or claims; folders another machine owns are skipped with a note (same or different here) |
-| `box owners [--json]`, `box release FOLDER...` | list every folder of the box with its owning machine and how the local copy compares (read-only); give up folders this machine owns (no data deleted) |
+| `box owners [--json]`, `box release FOLDER...` | list every folder of the box with its owning machine, its note and how the local copy compares (read-only); give up folders this machine owns (no data deleted) |
+| `box note FOLDER TEXT`, `box note FOLDER --clear` | developer machines: the folder's owning machine sets or clears a one-line note on a shared folder (in `_owners.json`; `box owners`, `box ls` and a cloud session start show it) |
 | `box index`, `box fetch PATH [--all]` | list the shared tree into the store (with owners and a session summary), fetch on demand; Azure blob storage or any rclone remote |
-| `box send PATH [--archive] [--label TEXT] [--new-session]` | upload results into this session's own namespace on the sessions side, recorded in its manifest; PATH is relative to the project folder, else to the current folder, and a file outside the project is sent under its file name |
-| `box sessions [--json] [--limit N]`, `box fetch --session ID [PATH] [--into DIR]` | list what earlier sessions produced, newest first; download a session's files (by id, unique start of the id, or label) into `_sessions/<id>/`; any runtime |
+| `box send PATH [--note TEXT] [--archive] [--label TEXT] [--new-session]` | upload results into this session's own namespace on the sessions side, recorded in its manifest with the note (what the files are and why; required on a cloud runtime); PATH is relative to the project folder, else to the current folder, and a file outside the project is sent under its file name |
+| `box sessions [--json] [--limit N]`, `box fetch --session ID [PATH] [--into DIR]` | list what earlier sessions produced, newest first, with their notes; print a session's notes and download its files (by id, unique start of the id, or label) into `_sessions/<id>/`; any runtime |
 | `box promote --session ID PATH [--as FOLDER]`, `box prune [--older-than DAYS] [--session ID]... [--keep-promoted] [--yes]` | developer machines: copy a session's file or folder into the shared tree, owned by this machine; delete old session namespaces (lists first, needs `--yes`) |
 | `box candidates [--json] [--min-bytes N]` | list the project's untracked and ignored entries with sizes and a kind guess, to choose what goes in the box; read-only |
 | `box ls [PATH]`, `box status`, `box evict PATH` | browse the box offline, see what was fetched here, delete fetched copies to free disk |
@@ -172,6 +177,14 @@ them, on two sides:
   copies what is worth keeping into the shared tree (`box promote`) and deletes old sessions
   (`box prune`).
 
+Names and sizes do not say what a file is for, so both sides carry short notes. `box send --note TEXT`
+records what the files are, why they were made and what to do next in the session manifest (a cloud
+session must give one); the owning machine of a shared folder describes it with `box note FOLDER TEXT`.
+`box sessions`, `box fetch --session`, `box owners` and `box ls` show them, and every cloud session start
+lists the newest sessions of each project with their notes. A rule worth adding to your instructions
+file: "a cloud agent gives a note with every `box send` and reads the notes (`box sessions`, `box ls`)
+before using files from the box". Details: "Notes" in [plugin/docs/project-config.md](plugin/docs/project-config.md).
+
 The older names of the two sides, inbound and outbound, still work in the config.
 Backends: `azure-blob` (through the Azure CLI, Azure AD sign-in only) and `rclone` (OneDrive, S3,
 Google Drive and many more).
@@ -219,9 +232,10 @@ owners" in [plugin/docs/reconciliation.md](plugin/docs/reconciliation.md).
   refuse paths inside the store or any git work tree.
 - The box never deletes remote files unless you pass `--delete` (shared tree) or `box prune --yes`
   (session namespaces only), never overwrites local files on a local runtime, refuses `box push`,
-  `box promote`, `box prune` and `box receive` on a cloud runtime, and refuses `.env` files. `box send`
-  writes only into the session's own namespace. The session manifest never holds environment values or
-  absolute paths.
+  `box promote`, `box prune`, `box receive` and `box note` on a cloud runtime, and refuses `.env` files.
+  `box send` writes only into the session's own namespace. The session manifest never holds environment
+  values or absolute paths, and a note that looks like it holds a secret is refused (the message names the
+  pattern, never the text).
   `box evict` deletes only files recorded as fetched from the box and unchanged since, and only on a
   cloud runtime unless you pass `--force`. `box rclone-env` never prints a secret value.
 - `--dry-run` shows the exact commands, with secret values replaced by `***`.

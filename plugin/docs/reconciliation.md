@@ -269,6 +269,10 @@ the shared side in `_owners.json`:
   what would be claimed, uploaded and skipped, and why.
 - `box release FOLDER` (the owning machine, a developer machine) removes the folder's entry, so the next
   push from another machine that has it claims it. No data is deleted.
+- `box note FOLDER TEXT` (the owning machine, a developer machine; `--clear` removes it) records a one-line
+  note on the folder in its entry, as `note` and `note_updated` (since 0.5.3). A push or a take-over keeps
+  the note; a release removes it with the entry. `box owners`, `box ls` and a cloud session start show it.
+  See "Notes" in project-config.md.
 - `box owners [--json]` lists every folder, its owner and since when, whether it is here, and the local
   copy against the owner's fingerprint: `same`, `different`, `absent`, `fetched` (every file here came
   from the box and is unchanged since), `unknown` (no fingerprint recorded) or `unowned` (the next push

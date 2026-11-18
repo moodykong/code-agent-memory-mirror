@@ -43,11 +43,11 @@ Leave out credentials that the probe does not need yet. A reachability test for 
 
 ## Probe
 
-First session prompt (the runbook's first-session step has it with the project repo filled in). The report is written inside the project clone, and the box send puts it in the session's namespace, so it can be read back with `agent-mirror box sessions` and `box fetch --session` instead of being copied:
+First session prompt (the runbook's first-session step has it with the project repo filled in). The report is written inside the project clone, and the box send puts it in the session's namespace with a note that says what it is, so it can be read back with `agent-mirror box sessions` and `box fetch --session` instead of being copied (a cloud `box send` needs `--note`; the store must pin agent-mirror 0.5.3 or later):
 
 ```
 Run this command, with <clone> replaced by the folder of your clone of <owner>/<repo>:
-cd <clone> && agent-mirror probe --full > probe_output.txt 2>&1 && agent-mirror box send probe_output.txt --label first-probe
+cd <clone> && agent-mirror probe --full > probe_output.txt 2>&1 && agent-mirror box send probe_output.txt --label first-probe --note "Report of agent-mirror probe --full from the first session in this environment; read it before changing the cloud setup."
 Then reply with the complete content of probe_output.txt in one code block, unchanged, followed by the output of the box send. Do not do anything else.
 ```
 

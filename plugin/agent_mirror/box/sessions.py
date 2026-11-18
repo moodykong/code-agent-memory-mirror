@@ -11,7 +11,9 @@ starts one with --new-session or when the remembered one is older than 24 hours.
 
 The manifest names the session (label, runtime, machine, project, repo, git branch and commit at the first
 send, times, tool) and lists its files. It is updated after each successful send the way _owners.json is:
-read, merge, write, read back, try again. It never holds environment values or absolute paths.
+read, merge, write, read back, try again. It never holds environment values or absolute paths. Since 0.5.3
+it may hold notes (notes.py): `note`, the latest note given with `box send --note`, and `notes`, one
+{"at", "note", "paths"} entry per note; both are optional, so older readers ignore them.
 
 Cloud sessions never write the shared tree. A developer machine copies what is worth keeping into it with
 `box promote`, through its own copy of the folder and the normal ownership of box push, and removes old
@@ -31,7 +33,7 @@ import tarfile
 import tempfile
 
 from agent_mirror import __version__, machine
-from agent_mirror.box import archive, units
+from agent_mirror.box import archive, notes, units
 from agent_mirror.box.local import STATE_DIR, FetchRecord, disk_guard, ensure_git_exclude, human
 from agent_mirror.box.rules import clean_rel, folder_files
 from agent_mirror.box.sides import side_for
@@ -229,10 +231,13 @@ def put_json(side, rel, data, timeout):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def update_manifest(side, sid, base, timeout, files=(), promoted=None, label=None, new=False):
+def update_manifest(
+    side, sid, base, timeout, files=(), promoted=None, label=None, new=False, note=None, note_paths=()
+):
     """Read, merge, write and read back the manifest. Returns (ok, problem or None, the manifest).
 
     new: the session started in this command, so its namespace has no manifest yet (the first read is skipped).
+    note: this send's note, recorded on note_paths (the sent paths); merged into what the manifest holds now.
     """
     doc = None
     for attempt in range(TRIES):
@@ -249,6 +254,7 @@ def update_manifest(side, sid, base, timeout, files=(), promoted=None, label=Non
         doc["files"] = [by_path[k] for k in sorted(by_path)]
         if promoted:
             doc["promoted"] = list(doc.get("promoted") or []) + [promoted]
+        notes.add_note(doc, note, note_paths, doc["updated"])
         ok, detail = put_json(side, "%s/%s" % (sid, MANIFEST), doc, timeout)
         if not ok:
             return False, "cannot write %s: %s" % (scrub(side.where("%s/%s" % (sid, MANIFEST))), detail), doc
@@ -351,6 +357,7 @@ def summary_of(view, sid):
     if m:
         files = [f for f in m.get("files") or [] if isinstance(f, dict)]
         git = m.get("git") or {}
+        said = notes.manifest_notes(m)
         return {
             "id": sid,
             "label": m.get("label"),
@@ -364,6 +371,10 @@ def summary_of(view, sid):
             "updated": m.get("updated"),
             "promoted": len(m.get("promoted") or []),
             "manifest": True,
+            "note": (
+                m["note"] if isinstance(m.get("note"), str) and m["note"].strip() else (said[-1][2] if said else None)
+            ),
+            "notes": len(said),
         }
     listed = view.files(sid)
     stamps = sorted(str(f.get("modtime") or "") for f in listed if f.get("modtime"))
@@ -381,6 +392,8 @@ def summary_of(view, sid):
         "updated": stamps[-1] if stamps else None,
         "promoted": 0,
         "manifest": False,
+        "note": None,
+        "notes": 0,
     }
 
 
@@ -455,6 +468,13 @@ def cmd_sessions(args, s, runtime):
                 "  promoted: %d" % r["promoted"] if r.get("promoted") else "",
             )
         )
+        if r.get("note"):
+            out("      note: %s" % notes.shown(r["note"]))
+            if int(r.get("notes") or 0) > 1:
+                out(
+                    "      (%d notes in this session; `agent-mirror box fetch --session %s --dry-run` prints them all)"
+                    % (int(r["notes"]), r["id"])
+                )
     if total > len(rows):
         out("(%d more; show them with --limit %d)" % (total - len(rows), total))
     if others:
@@ -605,6 +625,8 @@ def cmd_fetch(args, s, runtime):
             dest,
         )
     )
+    for line in notes.note_lines(manifest):
+        out(line)
     if args.dry_run:
         out("would download them from %s (%s; %s)" % (scrub(side.where(sid)), human(need), "overwriting local files" if cloud else "never overwriting existing local files"))
         return 0
@@ -938,7 +960,12 @@ def index_line(s, timeout):
     rows = []
     for n in names[:INDEX_CAP]:
         r = summary_of(view, n)
-        rows.append(dict((k, r.get(k)) for k in ("id", "label", "runtime", "branch", "commit", "updated", "files", "bytes")))
+        rows.append(
+            dict(
+                (k, r.get(k))
+                for k in ("id", "label", "runtime", "branch", "commit", "updated", "files", "bytes", "note")
+            )
+        )
     return {"path": "_sessions", "sessions": rows, "more": max(0, len(names) - INDEX_CAP)}
 
 

@@ -29,7 +29,7 @@ from agent_mirror.links import is_linklike, link_target
 from agent_mirror.projects import discover_projects
 from agent_mirror.runtime import detect_runtime
 from agent_mirror.session import command_argv
-from agent_mirror.util import git, out, short, tilde
+from agent_mirror.util import git, git_refusal, out, short, tilde
 
 RUNTIME_VARS = ("CLAUDE_CODE_REMOTE", "CODEX_THREAD_ID", "CODEX_CI", "HTTPS_PROXY", "https_proxy", "ALL_PROXY")
 TOOLS = ("python3", "python", "uv", "git", "az", "rclone", "gh", "node")
@@ -138,6 +138,18 @@ def store_host_url(store):
     return "https://%s" % m.group(1) if m else None
 
 
+def store_python_lines(plat):
+    """Where a Microsoft Store Python keeps agent-mirror's config and cache folders (nothing on other Pythons)."""
+    family = plat.store_python()
+    if not family:
+        return []
+    return [
+        "python is the Microsoft Store Python (%s): it keeps new files under AppData in its package folder" % family,
+        "  config %s%s" % (plat.config_dir(), plat.disk_note(plat.config_dir())),
+        "  cache  %s%s" % (plat.cache_dir(), plat.disk_note(plat.cache_dir())),
+    ]
+
+
 def project_settings(ctx, args):
     """(store, discovery, [(project, clone path, env)]) for every project this session touches."""
     store = ctx.store_or_none(quiet=True)
@@ -202,6 +214,8 @@ def quick_probe(args, ctx):
         passed, failed = passed + ok, failed + (not ok)
         out("%s  tcp %s  %s" % ("PASS" if ok else "FAIL", spec, note))
     out("python: %s (%s)" % (sys.version.split()[0], sys.executable))
+    for line in store_python_lines(plat):
+        out(line)
     out("uv --version: %s" % tool_version(["uv", "--version"]))
     out("disk free (home): %s" % disk_free(plat.home()))
     out("cpu count: %s" % os.cpu_count())
@@ -305,8 +319,9 @@ def full_probe(args, ctx):
     for line in stamp_lines(plat) + record_lines(last_record(plat)):
         out(line)
     if store:
-        rc, log, _ = git(store.root, ["log", "--oneline", "-1"], 10)
-        out("store: %s  %s" % (store.root, log.strip() if rc == 0 else "(not a git clone)"))
+        rc, log, stderr = git(store.root, ["log", "--oneline", "-1"], 10)
+        refusal = git_refusal(store.root, stderr=stderr) if rc != 0 else None
+        out("store: %s  %s" % (store.root, log.strip() if rc == 0 else "(%s)" % (refusal or "not a git clone")))
     else:
         out("store: none configured")
     out(
@@ -319,6 +334,8 @@ def full_probe(args, ctx):
 
     section("3 tools")
     out("%-8s %s (%s)" % ("this", sys.version.split()[0], sys.executable))
+    for line in store_python_lines(plat):
+        out(line)
     box_tools = {"az": "azure-blob", "rclone": "rclone"}
     for tool in TOOLS:
         version = tool_version([tool, "--version"])
@@ -429,7 +446,8 @@ def full_probe(args, ctx):
                     "probe written %s from %s\n"
                     % (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), detect_runtime())
                 )
-            tail_run(self_argv(ctx, "box", "send", note, *box_args), 180, tail=3)
+            about = "Test file written by agent-mirror probe --full to check box send; nothing to keep."
+            tail_run(self_argv(ctx, "box", "send", note, "--note", about, *box_args), 180, tail=3)
             from agent_mirror.box.sessions import load_local
 
             sid = load_local(path).get("id")

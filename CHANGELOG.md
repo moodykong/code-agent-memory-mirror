@@ -1,5 +1,69 @@
 # Changelog
 
+## 0.5.3
+
+Notes that travel with the box's files, and two fixes from a real Windows 11 machine.
+
+- **`box send --note TEXT`.** One to three sentences: what the files are, why they were made, what to do
+  next. The session manifest gets two optional keys: `note` (the latest note given) and `notes`, one
+  `{"at", "note", "paths"}` entry per note with the paths it was given for (consecutive sends with the same
+  text share one entry; the newest 20 are kept), so a later send with another note does not erase the
+  earlier context. `schema` stays 1. On a cloud runtime a send without a note is refused with exit code 2
+  and one line, before anything is uploaded: `error: refusing box send on claude-cloud without a note: pass
+  --note "what these files are and why" (...)`. On a developer machine the note stays optional. `probe
+  --full` sends its test file with a note.
+- **Note text rules.** One line (control characters dropped, whitespace and newlines collapsed), at most
+  500 characters, and text that matches `sync`'s secret patterns or holds the value of a secret-looking
+  environment variable is refused; the message names the pattern, never the text.
+- **Notes are shown.** `box sessions` prints the session's note under each line (up to 200 characters;
+  `--json` has the whole note and the count of notes). `box fetch --session ID` prints every note of the
+  session first (`--dry-run` prints them and downloads nothing). The `_sessions` summary of `box index`
+  carries each session's note, so `box sessions` without the transfer program shows it too.
+- **`box note FOLDER TEXT` and `box note FOLDER --clear`.** A one-line note on a folder of the shared tree,
+  stored in the folder's `_owners.json` entry (`note`, `note_updated`). Only the owning machine sets it, on
+  a developer machine, with the messages of `box release`; refused on a cloud runtime. It goes through the
+  same read, merge, write, read back as every `_owners.json` change (and converts a box that still has the
+  old `_writer.json` marker the way `box release` does). `box push` keeps an entry's note (and any key it
+  does not set itself) when it rewrites the entry, and so does `--take-over`; `box release` removes the
+  entry with its note. `box note` also writes the entry into the owners line of the local
+  `box_index.jsonl`; commit it as after `box index`. `box owners` (`--json` too) and `box ls` show the
+  note, offline from the committed index.
+- **At a cloud session start**, `session-start` ends with, per project of the session, the newest 5
+  sessions (label and id, age, file count, note) and the shared folders that have notes. It makes the calls
+  `box sessions` makes (one listing and one batched manifest read; azure-blob signs in first), all within
+  the new `session-start --box-timeout SECONDS` (default 20; 0 skips it; the az sign-in is bounded by it
+  too). The folder notes come from the committed index. It is the step `box notes (<project>)` of the step
+  log, never fails the session, prints one line when it cannot list, and shows the committed index's
+  session summary when the transfer program is missing. A developer machine prints nothing new. In a test
+  sandbox it never starts a transfer program from outside the sandbox.
+- **Call counts are unchanged** for `box sessions`, `send`, `fetch`, `push`, `owners` and `index`; a new test
+  checks that a cloud session start makes the same number of calls with 3 and 30 sessions (rclone 2,
+  azure-blob 3). `box note` makes 4, like `box release`.
+- **Compatibility.** 0.5.2 reads manifests and `_owners.json` written by 0.5.3 (the new keys are optional
+  and ignored), and 0.5.3 reads those of 0.5.2 (no notes). A 0.5.2 `box send` into a session keeps its
+  notes, and a 0.5.2 `box push` of an unchanged folder keeps the folder note. One loss: a 0.5.2 `box push`
+  by the owning machine of a folder whose content changed rebuilds that entry without the note; set it
+  again with 0.5.3. A new test runs the 0.5.2 release against records of both versions.
+- **Upgrade steps.** The runbook's first-session prompt now uses `--note`, so pin agent-mirror 0.5.3 or
+  later in `store.json` before you render again (`cloud render` warns about an older pin). An instruction
+  in your own `AGENTS.md` that tells cloud agents to run `box send` without `--note` now meets the refusal:
+  add the note. The template `AGENTS.md` says so; a store that still holds the 0.5.0 to 0.5.2 template counts
+  as having no instructions of its own. A rule worth adding: "a cloud agent gives a note with every `box
+  send` and reads the notes (`box sessions`, `box ls`) before using files from the box".
+- **Windows: git's "dubious ownership".** A store or agent-mirror clone made from an elevated shell belongs
+  to the Administrators group, and git started without elevation (Task Scheduler, the agent app) refuses
+  it. `sync` printed only "the store ... is not a git clone". Now `sync`, `session-start`, the cloud
+  self-update, `cloud bootstrap`, `init-store` and `probe` name the refusal in one line with the exact
+  remedy (`git config --global --add safe.directory <path with forward slashes>`, the path git names), and
+  `doctor` reports it as a PROBLEM for the store and for the agent-mirror clone. The git config is never
+  changed by agent-mirror. Tested with git's `GIT_TEST_ASSUME_DIFFERENT_OWNER` where git honours it.
+- **Windows: the Microsoft Store Python.** It keeps the files it writes under `%LOCALAPPDATA%` and
+  `%APPDATA%` in `%LOCALAPPDATA%\Packages\PythonSoftwareFoundation.Python.<version>_<id>\LocalCache\`, so a
+  printed log path did not exist for other programs. agent-mirror recognises that Python (from
+  `sys.executable` or `sys.base_prefix`), and `doctor`, `probe`, `timer install` and `sync --log` also print
+  the real location, checked by which path exists. Nothing changes with any other Python. The computation is
+  unit-tested with made-up paths.
+
 ## 0.5.2
 
 Fixes from real Claude Code on the web probe sessions.
