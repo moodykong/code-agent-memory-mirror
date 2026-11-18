@@ -1,7 +1,7 @@
 """The rclone box backend: OneDrive, S3, Google Drive, SFTP and anything else rclone reaches.
 
-Settings: inbound_remote and outbound_remote, each "remote:path" as rclone
-names them (a local folder also works). Credentials live in rclone's own
+Settings: shared_remote and sessions_remote (older names: inbound_remote and
+outbound_remote), each "remote:path" as rclone names them (a local folder also works). Credentials live in rclone's own
 config (`rclone config`, or RCLONE_CONFIG_* environment variables in a cloud
 session); agent-mirror never reads them.
 
@@ -14,7 +14,7 @@ import os
 import shutil
 import time
 
-from agent_mirror.box import archive, owners
+from agent_mirror.box import archive, owners, sessions
 from agent_mirror.box.common import run_transfer
 from agent_mirror.box.local import FetchRecord, disk_guard
 from agent_mirror.box.sides import RcloneSide
@@ -22,7 +22,7 @@ from agent_mirror.box.rules import folder_files
 from agent_mirror.box.units import TOP
 from agent_mirror.runtime import CLOUD_RUNTIMES
 from agent_mirror.platforms import current
-from agent_mirror.util import err, local_path, norm, out, short, show_cmd, utc_stamp, warn, within
+from agent_mirror.util import err, local_path, norm, out, short, show_cmd, warn, within
 
 RCLONE_MISSING = "rclone is not installed or not on PATH; the rclone box needs it (https://rclone.org/install/)"
 ENV_FILE_FILTERS = ["- .env", "- *.env"]
@@ -30,6 +30,10 @@ ENV_FILE_FILTERS = ["- .env", "- *.env"]
 
 def ready(dry_run):
     return rclone_ready(dry_run)
+
+
+def prepare(args, runtime):
+    return rclone_ready(getattr(args, "dry_run", False))
 
 
 def rclone_ready(dry_run):
@@ -68,7 +72,7 @@ def local_folders(s):
     """Folders inside the project that agent-mirror itself manages; never pushed file by file."""
     from agent_mirror.box.extras import mount_dir, receive_dir
 
-    found = ["/%s/**" % archive.ARCHIVE_DIR, "/.agent-mirror/**"]
+    found = ["/%s/**" % archive.ARCHIVE_DIR, "/.agent-mirror/**", "/_sessions/**"]
     root = os.path.realpath(s["project_path"])
     for folder in (mount_dir(s), receive_dir(s)):
         real = os.path.realpath(folder)
@@ -124,7 +128,7 @@ def push_folders(args, s, layout, folder_units):
     """
     names = [u["name"] for u in folder_units]
     verb = "sync" if args.delete else "copy"
-    cmd = ["rclone", verb, s["project_path"], s["inbound"]] + filter_args(s, layout.folders, set(names))
+    cmd = ["rclone", verb, s["project_path"], s["shared"]] + filter_args(s, layout.folders, set(names))
     out("%s: %s" % ("would run" if args.dry_run else "running", show_cmd(cmd)))
     if args.dry_run:
         return names, 0
@@ -134,7 +138,7 @@ def push_folders(args, s, layout, folder_units):
     if rc != 0:
         err("rclone %s failed after %.1f s (%s)" % (verb, took, stderr or "rc %s" % rc))
         return [], 1
-    out("pushed %s to %s in %.1f s" % (", ".join(names), s["inbound"], took))
+    out("pushed %s to %s in %.1f s" % (", ".join(names), s["shared"], took))
     return names, 0
 
 
@@ -142,7 +146,7 @@ def push_folders(args, s, layout, folder_units):
 
 
 def index(args, s, runtime):
-    cmd = ["rclone", "lsjson", "-R", "--files-only", "--no-mimetype", s["inbound"]]
+    cmd = ["rclone", "lsjson", "-R", "--files-only", "--no-mimetype", s["shared"]]
     index_path = s["index_path"]
     if args.dry_run:
         out("dry run: nothing will change")
@@ -156,7 +160,7 @@ def index(args, s, runtime):
     start = time.time()
     rc, stdout, stderr = run_transfer(cmd, args.transfer_timeout)
     if rc in (3, 4):
-        out("%s does not exist yet; the index is empty" % s["inbound"])
+        out("%s does not exist yet; the index is empty" % s["shared"])
         stdout, rc = "[]", 0
     if rc != 0:
         return failed("rclone lsjson", rc, stdout, stderr)
@@ -188,13 +192,16 @@ def index(args, s, runtime):
                 fh.write(json.dumps({"path": rel, "size": it.get("Size"), "modtime": it.get("ModTime")}) + "\n")
                 kept += 1
             for entry in archive.index_entries(
-                RcloneSide(s, "inbound"), sidecars, os.path.dirname(index_path), args.transfer_timeout
+                RcloneSide(s, "shared"), sidecars, os.path.dirname(index_path), args.transfer_timeout
             ):
                 fh.write(json.dumps(entry) + "\n")
             for line in owners.index_lines(
-                RcloneSide(s, "inbound"), args.timeout, owners.OWNERS in has_marker, owners.LEGACY in has_marker
+                RcloneSide(s, "shared"), args.timeout, owners.OWNERS in has_marker, owners.LEGACY in has_marker
             ):
                 fh.write(json.dumps(line) + "\n")
+            summary = sessions.index_line(s, args.timeout)
+            if summary is not None:
+                fh.write(json.dumps(summary) + "\n")
         os.replace(partial, index_path)
     finally:
         if os.path.exists(partial):
@@ -220,7 +227,7 @@ def fetch(args, s, runtime, rel):
     if not cloud and os.path.isfile(dest):
         out("%s already exists locally; fetch never overwrites on a %s runtime, skipped" % (dest, runtime))
         return 0
-    src = remote_join(s["inbound"], rel)
+    src = remote_join(s["shared"], rel)
     keep_local = [] if cloud else ["--ignore-existing"]
     stat_cmd = ["rclone", "lsjson", "--stat", src]
     file_cmd = ["rclone", "copyto", src, dest] + keep_local
@@ -255,7 +262,7 @@ def fetch(args, s, runtime, rel):
         return 1
     cmd = dir_cmd if item.get("IsDir") else file_cmd
     if item.get("IsDir"):
-        listed = RcloneSide(s, "inbound").list(rel, args.transfer_timeout)
+        listed = RcloneSide(s, "shared").list(rel, args.transfer_timeout)
         if listed is None:
             err("cannot list %s" % src)
             return 1
@@ -283,10 +290,11 @@ def fetch(args, s, runtime, rel):
 # send -----------------------------------------------------------------------------------------
 
 
-def send(args, s, runtime, rel):
+def send(args, s, runtime, rel, sid):
+    """Upload a file or folder into this session's namespace (a second send of a path replaces it)."""
     src = local_path(s["project_path"], rel)
     is_dir = os.path.isdir(src)
-    dest = remote_join(s["outbound"], "%s-%s/%s" % (runtime, utc_stamp(), rel))
+    dest = remote_join(s["sessions"], "%s/%s" % (sid, rel))
     keep, skipped = folder_files(src, rel, s["rules"]) if is_dir else ([], [])
     if is_dir:
         if skipped:
@@ -311,9 +319,9 @@ def send(args, s, runtime, rel):
                 with os.fdopen(fd, "w", encoding="utf-8") as fh:
                     fh.write("\n".join(keep) + "\n")
                 shown_list = listfile
-            cmd = ["rclone", "copy", src, dest, "--files-from", shown_list, "--ignore-existing"]
+            cmd = ["rclone", "copy", src, dest, "--files-from", shown_list]
         else:
-            cmd = ["rclone", "copyto", src, dest, "--ignore-existing"]
+            cmd = ["rclone", "copyto", src, dest]
         if args.dry_run:
             out("would run: %s" % show_cmd(cmd))
             return 0
@@ -337,6 +345,6 @@ def send(args, s, runtime, rel):
 def describe(s):
     return [
         "rclone",
-        "inbound  %s  (box push writes, box index and box fetch read)" % s["inbound"],
-        "outbound %s  (box send writes)" % s["outbound"],
+        "shared   %s  (box push writes, box index and box fetch read)" % s["shared"],
+        "sessions %s  (box send writes, one folder per session; box sessions lists them)" % s["sessions"],
     ]

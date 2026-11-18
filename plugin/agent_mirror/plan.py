@@ -48,6 +48,7 @@ TEMPLATE_AGENTS = os.path.join(PLUGIN_ROOT, "templates", "store", "AGENTS.md")
 OLD_TEMPLATE_DIGESTS = {
     "dade76da6e37c86c10ae6a5fcb51e1c518296f99b3c91333d4b50edf87caeba6",  # 0.1.0
     "472f1f3d157fed70fd6da53ba5bcd15f6262c0bc2b7dc4c86ed089e6b3629331",  # 0.2.0 and 0.2.1
+    "d9d6715bd6dff5b802070b9b359dd546cbf5868e58fe59c6db8c5acc900e9b43",  # 0.3.0 to 0.4.0
 }
 BOX_WALK_SECONDS = 10.0
 
@@ -805,6 +806,8 @@ def read_box_index(path, s=None):
                 if isinstance(r.get("owners"), dict):
                     found["owners"] = clean_folders({"folders": r["owners"]})
                     continue
+                if "sessions" in r or not r.get("path"):
+                    continue  # the session summary, or anything that is not an entry
                 if r.get("archive"):
                     files, size = int(r.get("files") or 0), int(r.get("bytes") or 0)
                     if r.get("path"):

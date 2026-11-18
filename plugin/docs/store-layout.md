@@ -178,16 +178,20 @@ contents file lists every file of the folder with its size and whether it is in 
 its own. The folder owners are one more line: `{"path": "_owners.json", "schema": 1, "owners":
 {"<folder>": {"machine_id", "machine_name", "since", "fingerprint", "updated"}}}`. A box written by an
 older version may also have its single-writer marker: `{"path": "_writer.json", "writer": {"machine_id",
-"machine_name", "date", "tool"}}`. Readers of the entries skip both lines; `plan`, `box ls` and
-`box owners` use them. Commit the index and `box_toc/` so `agent-mirror box ls` and `agent-mirror plan`
+"machine_name", "date", "tool"}}`. When the sessions side holds sessions, one more line summarizes the
+newest sessions: `{"path": "_sessions", "sessions": [{"id", "label", "runtime", "branch", "commit", "updated",
+"files", "bytes"}], "more": N}` (the newest 50). Readers of the entries skip these lines; `plan`, `box ls`, `box owners`
+and `box sessions` (without the transfer program) use them. Commit the index and `box_toc/` so `agent-mirror box ls` and `agent-mirror plan`
 work offline on other machines.
 
 ## In the project folder (never committed)
 
 `box fetch` records what it wrote in `<project>/.agent-mirror/fetched.json` (used by `box status` and
-`box evict`). agent-mirror adds `/.agent-mirror/` to the clone's `.git/info/exclude`, never to the tracked
-`.gitignore`. `box receive` (default `_agent_outbound/`) and `box mount` (default `_box/`) folders inside
-the project are added there too.
+`box evict`), and `box send` remembers this session in `<project>/.agent-mirror/session.json` (its id,
+label, runtime, host and start time). agent-mirror adds `/.agent-mirror/` to the clone's
+`.git/info/exclude`, never to the tracked `.gitignore`. Fetched sessions (`_sessions/`), `box receive`
+(default `_agent_outbound/`) and `box mount` (default `_box/`) folders inside the project are added there
+too.
 
 ## What `sync` commits
 

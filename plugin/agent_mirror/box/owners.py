@@ -1,4 +1,4 @@
-"""Who pushes which folder: <inbound>/_owners.json, one owning machine per folder unit.
+"""Who pushes which folder: <shared>/_owners.json, one owning machine per folder unit.
 
     {"schema": 1,
      "folders": {"<folder>": {"machine_id": "...", "machine_name": "...", "since": "...",
@@ -15,7 +15,7 @@ modification time (whole seconds). Two copies count as the same only when all th
 The remote has no locking. Every change reads the file again right before writing, changes only this
 machine's entries, writes, reads it back and checks them; on a mismatch it tries again, then fails.
 
-Older versions kept one writer per box in <inbound>/_writer.json. When only that marker exists, its
+Older versions kept one writer per box in <shared>/_writer.json. When only that marker exists, its
 machine owns every folder currently in the box. The first _owners.json written for such a box carries
 those folders too (otherwise they would look unowned); _writer.json itself is never deleted.
 """
@@ -155,16 +155,43 @@ def box_folders(side, s, timeout, list_timeout=None):
     return found, None
 
 
+def read_both(side, timeout):
+    """(owners data, marker data, problem): one transfer call on rclone, one or two on azure-blob."""
+    if side.backend != "rclone":
+        data, problem = read_json(side, OWNERS, timeout)
+        if problem or data is not None:
+            return data, None, problem
+        marker, problem = read_json(side, LEGACY, timeout)
+        return None, marker, problem
+    tmp = current().mkdtemp("agent-mirror-owners-")
+    try:
+        found, problem = side.get_present("", list(MARKERS), tmp, timeout)
+        if problem:
+            return None, None, problem
+        result = []
+        for rel in MARKERS:
+            data = None
+            if rel in found:
+                try:
+                    with open(os.path.join(tmp, rel), encoding="utf-8") as fh:
+                        data = json.load(fh)
+                except (OSError, ValueError):
+                    return None, None, "%s is not valid JSON" % where(side, rel)
+            result.append(data if isinstance(data, dict) else None)
+        return result[0], result[1], None
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def read_state(side, s, timeout, list_timeout=None):
     """(State, problem or None). list_timeout bounds the whole-box listing an old marker needs."""
-    data, problem = read_json(side, OWNERS, timeout)
+    data, marker, problem = read_both(side, timeout)
+    if problem:
+        return None, "cannot read %s: %s" % (where(side), problem)
     if problem:
         return None, "cannot read %s: %s" % (where(side), problem)
     if data is not None:
         return State(clean_folders(data), True), None
-    marker, problem = read_json(side, LEGACY, timeout)
-    if problem:
-        return None, "cannot read %s: %s" % (where(side, LEGACY), problem)
     if not marker or not marker.get("machine_id"):
         return State({}, False), None
     in_box, problem = box_folders(side, s, timeout, list_timeout)
@@ -269,7 +296,7 @@ def role_refusal(project, role):
 def push(args, s, runtime, backend, plat):
     """box push with folder ownership. backend is the backend module (azure or rclone)."""
     if runtime in CLOUD_RUNTIMES:
-        err("refusing box push on %s: only a developer machine writes the inbound side" % runtime)
+        err("refusing box push on %s: only a developer machine writes the shared side" % runtime)
         return 2
     project_path = s["project_path"]
     if not os.path.isdir(project_path):
@@ -308,7 +335,7 @@ def push(args, s, runtime, backend, plat):
     if not local:
         out("nothing to push: no folder of this box has files in %s" % project_path)
         return 0
-    side = side_for(s, "inbound")
+    side = side_for(s, "shared")
     tool = TOOL_FOR_BACKEND[s["backend"]]
     if not backend.ready(args.dry_run):
         return 1
@@ -388,11 +415,16 @@ def push(args, s, runtime, backend, plat):
         ok_names, failed = backend.push_folders(args, s, layout, folder_todo)
         done |= set(ok_names)
         failures += failed
+    sidecars = {}
+    if not args.dry_run:
+        sidecars = archive.read_sidecars(side, [u["name"] for u, sm, a in todo if u["kind"] == "archive"], args.timeout)
     for u, sm, action in todo:
         if u["kind"] == "folder":
             fingerprints[u["name"]] = sm["fingerprint"]
             continue
-        result = archive.push_one(args, s, side, u["name"], scanned=(sm["entries"], sm["skipped"]))
+        result = archive.push_one(
+            args, s, side, u["name"], scanned=(sm["entries"], sm["skipped"]), remote_sidecar=sidecars.get(u["name"], False)
+        )
         if result["rc"]:
             failures += 1
         else:
@@ -481,7 +513,7 @@ def release(args, s, runtime, backend, plat):
     if runtime in CLOUD_RUNTIMES:
         err("refusing box release on %s: only a developer machine changes ownership" % runtime)
         return 2
-    side = side_for(s, "inbound")
+    side = side_for(s, "shared")
     if not backend.ready(False):
         return 1
     mid, _ = machine.identity(load_user_config(plat))
@@ -551,7 +583,7 @@ def from_index(index_path):
 
 
 def cmd_owners(args, s, runtime, backend):
-    side = side_for(s, "inbound")
+    side = side_for(s, "shared")
     tool = TOOL_FOR_BACKEND[s["backend"]]
     source = "the box (%s)" % where(side)
     state = None

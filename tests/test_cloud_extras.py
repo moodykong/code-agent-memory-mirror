@@ -119,6 +119,8 @@ class ProbeArchiveTest(ToolTest):
         self.assertIn("fetch ws-1/a/tiny.txt (the smallest file of an archived folder", out)
         self.assertIn("evict: deleted 1 file(s)", out)
         self.assertFalse(os.path.exists(os.path.join(ws, "a", "tiny.txt")))
+        # after its send test, probe lists the newest sessions and finds the one it just wrote
+        self.assertRegex(out, r"the session just written \(claude-cloud-\d{8}T\d{6}Z-[0-9a-f]{6}\) is listed: yes")
 
 
 class SelfUpdateTest(ToolTest):

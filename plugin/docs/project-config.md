@@ -123,10 +123,27 @@ them; how Claude picks its memory folder in that case is UNVERIFIED. Commands th
 
 ## `box`
 
-The box moves untracked bulk files (results, figures, slides) between the developer machine and agents.
-Two sides: **inbound** (developer machines upload with `box push`, each the folders it owns; agents read
-with `box index` and `box fetch`) and **outbound** (agents upload results with `box send`; the developer
-pulls them by hand).
+The box moves untracked bulk files (results, figures, slides) between machines and sessions. It has two
+sides:
+
+- **shared**: one tree of durable files. Developer machines upload it with `box push`, each the folders
+  it owns ("Folder owners" below); every machine and session reads it (`box index`, `box ls`,
+  `box fetch`). Cloud sessions never write it.
+- **sessions**: one namespace per session. `box send` writes into the namespace of the session it runs
+  in; every machine and session lists them (`box sessions`) and fetches them (`box fetch --session`). A
+  developer machine copies what is worth keeping into the shared tree (`box promote`) and deletes old
+  sessions (`box prune`). See "Sessions" below.
+
+Older versions called the two sides **inbound** (shared) and **outbound** (sessions). The old key names
+still work, and `doctor` says so in one line:
+
+| Backend | Shared side | Sessions side | Older names (still read) |
+| --- | --- | --- | --- |
+| azure-blob | `shared_container` | `sessions_container` | `inbound_container`, `outbound_container` |
+| rclone | `shared_remote` | `sessions_remote` | `inbound_remote`, `outbound_remote` |
+
+When both a new and an old name are set, the new one is used. Objects inside an existing box keep their
+places (`_owners.json`, `_writer.json` and `_archives/` on the shared side).
 
 Common keys:
 
@@ -144,8 +161,8 @@ Settings for on-demand retrieval (all optional):
 | `archive_large_file_bytes` | `52428800` (50 MiB) | in archived folders, files this big or bigger travel on their own instead of inside the bundle; `0` keeps everything in the bundle |
 | `toc_inline_bytes` | `5000000` | a table of contents bigger than this goes into its own `<name>.toc.json.gz` instead of the sidecar |
 | `min_free_bytes` | `2147483648` (2 GiB) | free disk that every fetch and receive must leave; `--force` overrides |
-| `receive_dir` | `_agent_outbound` | where `box receive` puts results (relative to the project folder, or absolute) |
-| `mount_dir` | `_box` | where `box mount` mounts the inbound side (relative to the project folder, or absolute) |
+| `receive_dir` | `_agent_outbound` | where `box receive` puts the sessions it downloads (relative to the project folder, or absolute; the default keeps its older name) |
+| `mount_dir` | `_box` | where `box mount` mounts the shared side (relative to the project folder, or absolute) |
 
 Patterns: `**` crosses folders, `*` and `?` do not, and `**/` also matches no folder. A pattern without
 `/` matches a file name at any depth.
@@ -157,8 +174,8 @@ Uses the Azure CLI (`az`) with Azure AD sign-in only (`--auth-mode login`, never
 | Key | Meaning |
 | --- | --- |
 | `storage_account` | the storage account name, e.g. `"mystorageaccount"`. While empty, box commands do nothing. |
-| `inbound_container` | container the developer machine writes |
-| `outbound_container` | container agents write |
+| `shared_container` | container of the shared tree (developer machines write, everyone reads); older name `inbound_container` |
+| `sessions_container` | container of the session namespaces (every session writes its own, everyone reads); older name `outbound_container` |
 | `prefix` | folder inside both containers, e.g. the project name |
 
 - `include` entries must be `folder/**` (no wildcards); `exclude` entries must be `folder/**`,
@@ -168,7 +185,12 @@ Uses the Azure CLI (`az`) with Azure AD sign-in only (`--auth-mode login`, never
   (pass `--delete` to delete remote files whose local file is gone). It is refused on a cloud runtime.
   Each folder has one owning machine: see "Folder owners" below.
 - `box fetch` downloads through a staging folder and never overwrites a local file on a local runtime.
-- `box send` uploads to `<outbound_container>/<prefix>/<runtime>-<UTC time>/<path>`, never overwriting.
+- `box send` uploads to `<sessions_container>/<prefix>/<session id>/<path>`; a second send of a path in
+  the same session replaces it. `box sessions` lists the namespaces with a `/` delimiter listing (when the
+  listing comes back flat, the first path parts are used); `box prune` deletes one with
+  `az storage blob delete-batch --pattern '<prefix>/<session id>/*'`.
+- A cloud identity needs read access to the shared container and read and write access to the sessions
+  container (it reads other sessions there).
 - On a cloud runtime, when `az account show` fails, agent-mirror signs `az` in as a service principal
   from `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` and `AZURE_TENANT_ID`. The secret goes to `az` on stdin,
   never on a command line, and is replaced by `***` in all output.
@@ -182,10 +204,10 @@ Uses `rclone`, which reaches OneDrive, S3, Google Drive, SFTP and many more.
 
 | Key | Meaning |
 | --- | --- |
-| `inbound_remote` | `"remote:path"` as rclone names it, e.g. `"onedrive:agent-box/inbound/my-project"` |
-| `outbound_remote` | `"remote:path"` for results, e.g. `"onedrive:agent-box/outbound/my-project"` |
+| `shared_remote` | `"remote:path"` as rclone names it, e.g. `"onedrive:agent-box/shared/my-project"`; older name `inbound_remote` |
+| `sessions_remote` | `"remote:path"` for the session namespaces, e.g. `"onedrive:agent-box/sessions/my-project"`; older name `outbound_remote` |
 
-- `box push`: `rclone copy <project> <inbound_remote>` with `--filter` rules built from `include` and
+- `box push`: `rclone copy <project> <shared_remote>` with `--filter` rules built from `include` and
   `exclude` (env files first, then excludes, then the include patterns of the folders this push carries,
   then `- **`). `rclone sync` only with `--delete`; folders the push does not carry are filtered out, so
   sync never deletes them.
@@ -193,7 +215,9 @@ Uses `rclone`, which reaches OneDrive, S3, Google Drive, SFTP and many more.
 - `box fetch`: `rclone copyto` (a file) or `rclone copy` (a folder), with `--ignore-existing` on a
   local runtime so local files are never overwritten.
 - `box send`: `rclone copyto`, or `rclone copy --files-from <list>` for a folder (the list leaves out
-  env files and excluded paths), into `<outbound_remote>/<runtime>-<UTC time>/<path>`.
+  env files and excluded paths), into `<sessions_remote>/<session id>/<path>`. `box sessions` lists with
+  `rclone lsjson --dirs-only`, `box fetch --session` downloads with one `rclone copy --files-from`, and
+  `box prune` deletes with `rclone purge <sessions_remote>/<session id>`.
 - Credentials stay in rclone's own config (`rclone config`), or, in a cloud session, in
   `RCLONE_CONFIG_<REMOTE>_*` environment variables listed in `env_var_names`.
 
@@ -206,10 +230,10 @@ own archive, named by its relative path (`decompile/project-cli`), is left out o
 and travels as:
 
 ```
-<inbound>/_archives/<name>.tar.gz          the bundle: every file below archive_large_file_bytes
-<inbound>/_archives/<name>.large/<path>    each larger file, on its own
-<inbound>/_archives/<name>.json            the sidecar (uploaded last)
-<inbound>/_archives/<name>.toc.json.gz     the table of contents, only when it is too big for the sidecar
+<shared>/_archives/<name>.tar.gz          the bundle: every file below archive_large_file_bytes
+<shared>/_archives/<name>.large/<path>    each larger file, on its own
+<shared>/_archives/<name>.json            the sidecar (uploaded last)
+<shared>/_archives/<name>.toc.json.gz     the table of contents, only when it is too big for the sidecar
 ```
 
 For `decompile/project-cli` that is `_archives/decompile/project-cli.tar.gz` and so on.
@@ -247,7 +271,8 @@ and the table of contents: every file's relative path and size, marked `"in": "b
   that part of the bundle and lists the large files under it. This works the same for nested names
   (`box fetch decompile/project-cli/data`). A local runtime never overwrites existing files; a cloud
   runtime does.
-- `box send <folder> --archive` sends a folder to the outbound side as one `.tar.gz`.
+- `box send <folder> --archive` sends a folder into the session as one `.tar.gz`; `box fetch --session`
+  extracts it with the same safety checks.
 
 ### Folder owners
 
@@ -260,8 +285,8 @@ A box can have several writer machines, each owning its own folders. The units o
 - on rclone, include patterns that do not start with a folder (`*.pdf`, `notes.md`) form the unit `.`: the
   matching files that are not inside another unit's folder.
 
-`<inbound>/_owners.json` (azure-blob: `<inbound_container>/<prefix>/_owners.json`; rclone:
-`<inbound_remote>/_owners.json`) names the owning machine of each folder:
+`<shared>/_owners.json` (azure-blob: `<shared_container>/<prefix>/_owners.json`; rclone:
+`<shared_remote>/_owners.json`) names the owning machine of each folder:
 
 ```json
 {"schema": 1, "folders": {"<folder>": {"machine_id": "...", "machine_name": "...", "since": "...",
@@ -304,15 +329,88 @@ Cloud machines have little disk (about 30 GB is common), so nothing is fetched u
   unless you pass `--force`, deletes only files recorded as fetched from the box, and keeps any file that
   changed since it was fetched.
 
+### Sessions
+
+Every session writes its own namespace on the sessions side:
+
+```
+<sessions>/<session id>/<path>             what box send uploaded
+<sessions>/<session id>/<folder>.tar.gz    a folder sent with box send --archive
+<sessions>/<session id>/_session.json      the manifest
+```
+
+- A session id is `<runtime>-<YYYYMMDDTHHMMSSZ>-<6 hex>`, for example
+  `claude-cloud-20261117T101500Z-3fa2c1`. The first `box send` makes it and remembers it in
+  `<project>/.agent-mirror/session.json` (git-excluded); every later send of the session uses it. On a
+  cloud runtime a new machine is a new session. On a developer runtime a new session starts with
+  `box send --new-session`, or when the remembered one is older than 24 hours.
+- `box send --label TEXT` gives the session a short label on first use (letters, digits, `-`, `_`, `.`;
+  up to 60). A later different label is ignored with a note.
+- The manifest is updated after every successful send: read, merge, write, read back (and tried again on
+  a mismatch, like `_owners.json`). Its shape:
+
+```json
+{
+  "schema": 1,
+  "id": "claude-cloud-20261117T101500Z-3fa2c1",
+  "label": "exp-a",
+  "runtime": "claude-cloud",
+  "machine": {"id": "3f2a9c1e5b7d4e6f8a0b1c2d3e4f5a6b", "name": "my-laptop"},
+  "project": "my-project",
+  "repo": "example-org/my-project",
+  "git": {"branch": "main", "commit": "1a2b3c4d5e6f..."},
+  "started": "2026-11-17T10:15:00Z",
+  "updated": "2026-11-17T10:40:12Z",
+  "tool": "agent-mirror 0.5.0",
+  "files": [
+    {"path": "results/summary.csv", "bytes": 1520, "mtime": "2026-11-17T10:39:58Z"},
+    {"path": "results/run-3", "object": "results/run-3.tar.gz", "archive": true, "files": 212,
+     "bytes": 5242880, "archive_bytes": 901234, "mtime": "2026-11-17T10:30:00Z"}
+  ],
+  "promoted": [
+    {"path": "results/run-3", "to": "results/run-3", "folders": ["results"], "machine_id": "7d4e...",
+     "machine_name": "desk-a", "date": "2026-11-18T09:00:00Z"}
+  ]
+}
+```
+
+  `machine` is null when the machine has no id yet; `git` values are null outside a git clone. The
+  manifest never holds environment values or absolute paths.
+- `box sessions [--json] [--limit N]` (any runtime, read-only) lists the namespaces newest first by start
+  time: id, label, runtime, branch and short commit, file count, total size, last update. It reads one
+  listing of the sessions side and one manifest per listed session; older namespaces
+  (`<runtime>-<YYYYMMDDTHHMMSSZ>`, before 0.5.0) are listed from their files as "no manifest". Without the
+  transfer program it shows the summary of the last `box index`.
+- `box fetch --session ID [PATH] [--into DIR]` downloads a session's files (all, or PATH inside it) into
+  `<project>/_sessions/<session id>/` (`--into` is relative to the project folder; `--into .` writes over
+  the project tree). ID is the id, a unique start of it, or a label that exactly one session has. A
+  developer runtime never overwrites a local file; the disk guard applies; archives are extracted with
+  the safety checks of the shared side. `/_sessions/` is added to `.git/info/exclude`; `box status` lists
+  fetched sessions and `box evict _sessions/<session id>` deletes them.
+- `box promote --session ID PATH [--as FOLDER]` (developer machines) copies a session's file or folder
+  into the shared tree at FOLDER (default PATH). It goes through the local disk: the files are downloaded
+  into a temp folder, placed into this machine's copy of the folder (never over a different local file),
+  and that folder unit is pushed with the normal ownership logic, so a folder nobody owns is claimed. It
+  is refused when the folder is owned by another machine, or when FOLDER is not covered by `box.include`
+  or `box.archives` (the message says what to add). The manifest records what was promoted, by which
+  machine, when and to where. `--dry-run` shows the plan.
+- `box prune [--older-than DAYS] [--session ID ...] [--keep-promoted] [--yes]` (developer machines)
+  deletes session namespaces. It always lists them with sizes first and deletes only with `--yes`; it
+  never touches the shared tree and refuses names that do not look like session ids.
+- `box index` adds one line `{"path": "_sessions", "sessions": [...], "more": N}` with the id, label,
+  runtime, branch, commit, last update, file count and size of the newest 50 sessions, for offline use;
+  `box sessions` stays the live source.
+
 ### `box receive`
 
-`box receive [--into DIR]` downloads everything on the outbound side into `DIR` (default `receive_dir`,
-else `<project>/_agent_outbound`), never overwriting existing local files, after the same disk check.
-It is refused on a cloud runtime: results are received on the developer machine.
+`box receive [--into DIR]` downloads every session's files that are not in `DIR` yet (default
+`receive_dir`, else `<project>/_agent_outbound`), one folder per session, never overwriting existing local
+files, after the same disk check. It is refused on a cloud runtime. To look first, use `box sessions`; to
+get one session anywhere, `box fetch --session`.
 
 ### `box mount` (rclone only)
 
-`box mount [--cache-max-size 10G]` runs `rclone mount <inbound_remote> <mount_dir> --read-only
+`box mount [--cache-max-size 10G]` runs `rclone mount <shared_remote> <mount_dir> --read-only
 --vfs-cache-mode full --vfs-cache-max-size <size> --daemon`: files download when opened and the local
 cache stays under the cap. `box unmount` runs `fusermount3 -u` (or `fusermount -u`) on Linux and
 `umount` on macOS. It needs FUSE: on Linux `/dev/fuse` and a `fusermount3` or `fusermount` program, which
@@ -327,7 +425,7 @@ A cloud machine has no rclone config file. rclone also reads a remote from envir
 `RCLONE_CONFIG_MYDRIVE_TOKEN`, `RCLONE_CONFIG_MYDRIVE_DRIVE_ID` and `RCLONE_CONFIG_MYDRIVE_DRIVE_TYPE`.
 
 - A remote defined this way is named in lower case (`mydrive:`). Use lower-case names in
-  `inbound_remote` and `outbound_remote`, and use only letters, digits and `_` in remote names.
+  `shared_remote` and `sessions_remote`, and use only letters, digits and `_` in remote names.
 - Put the variable names in `env_var_names` (so `cloud render` lists them) and the values on the vendor's
   settings page.
 - An OAuth token stored in a variable cannot be refreshed on a throwaway machine: rclone refreshes it in
@@ -368,8 +466,8 @@ A cloud machine has no rclone config file. rclone also reads a remote from envir
   "box": {
     "backend": "azure-blob",
     "storage_account": "mystorageaccount",
-    "inbound_container": "agent-box-inbound",
-    "outbound_container": "agent-box-outbound",
+    "shared_container": "agent-box-shared",
+    "sessions_container": "agent-box-sessions",
     "prefix": "my-project",
     "include": ["results/**", "docs/slides/**", "figures/**"],
     "exclude": ["results/scratch/**", "**/__pycache__/**", "**/.env", "**/*.env"],
@@ -391,8 +489,8 @@ An rclone box instead:
 ```json
 "box": {
   "backend": "rclone",
-  "inbound_remote": "onedrive:agent-box/inbound/my-project",
-  "outbound_remote": "onedrive:agent-box/outbound/my-project",
+  "shared_remote": "onedrive:agent-box/shared/my-project",
+  "sessions_remote": "onedrive:agent-box/sessions/my-project",
   "include": ["results/**", "figures/**"],
   "exclude": ["**/__pycache__/**"],
   "archives": ["decompile/project*", "decompile/binaries-*"],

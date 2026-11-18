@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.5.0
+
+- The two sides of the box are now called **shared** (was inbound) and **sessions** (was outbound) in
+  messages, help texts and docs. New config keys: `shared_container` and `sessions_container`
+  (azure-blob), `shared_remote` and `sessions_remote` (rclone). The older `inbound_*` and `outbound_*`
+  keys keep working; `doctor` notes them in one line. `cloud render` notes and the store templates use the
+  new names. Objects inside existing boxes stay where they are.
+- Session namespaces. `box send` writes into `<sessions>/<session id>/`, one namespace per session, made
+  at the first send and remembered in `<project>/.agent-mirror/session.json`. The id is
+  `<runtime>-<YYYYMMDDTHHMMSSZ>-<6 hex>`. A cloud runtime starts a new session on a new machine; a developer
+  runtime with `--new-session` or after 24 hours. `box send --label TEXT` names the session. A second send
+  of a path in the same session replaces it (before, every send made a new folder and never overwrote).
+- Each session has a manifest, `_session.json`: schema, id, label, runtime, machine id and name, project,
+  repo, git branch and commit at the first send, start and update times, tool version, the files (path,
+  bytes, modification time; folders sent as archives with `archive: true` and their file count) and what
+  was promoted. It is updated after each send with read, merge, write and read back, and holds no
+  environment values or absolute paths.
+- `box sessions [--json] [--limit N]`: the sessions newest first, from one listing plus one manifest read
+  per listed session; namespaces from older versions show as "no manifest". Any runtime. Falls back to the
+  summary in the committed index when the transfer program is missing.
+- `box fetch --session ID [PATH] [--into DIR]`: a session's files into `<project>/_sessions/<session id>/`
+  by default (`--into .` writes over the project tree). ID can be a unique start of the id or a label.
+  Never overwrites on a developer runtime; disk guard; archives extracted safely; `_sessions/` is
+  git-excluded; `box status` lists fetched sessions and `box evict _sessions/<id>` removes them.
+- `box promote --session ID PATH [--as FOLDER]` (developer machines): copies a session's file or folder
+  into the shared tree through this machine's copy of the folder and the normal ownership of `box push`
+  (claimed when unowned). Refused when the folder is owned elsewhere or not covered by `box.include` or
+  `box.archives`. Recorded in the session manifest. `--dry-run`.
+- `box prune [--older-than DAYS] [--session ID ...] [--keep-promoted] [--yes]` (developer machines):
+  deletes session namespaces; always lists them with sizes first, deletes only with `--yes`, never touches
+  the shared tree, refuses names that do not look like session ids.
+- `box receive` downloads every session not received yet, one folder per session, as before; its help
+  points at `box sessions` and `box fetch --session`. `box index` adds a compact session summary line.
+  `probe --full` lists the newest sessions after its send test and checks that its own session is there.
+- The store's AGENTS.md template tells cloud agents to look at `box sessions`, to send with a label, and
+  that results worth keeping are promoted by the user's own machine. A store still holding the previous
+  template counts as having no instructions of its own, as before.
+- Fewer transfer calls: `box push` reads the sidecars of all archives it pushes in one call on rclone, the
+  first manifest write of a new session skips a read, and a session found by label is not read twice.
+- Tests: send, the manifest and its merge, listing, fetch by id, start and label, promote, prune and receive
+  on azure-blob (fake az, older key names) and rclone (fake, new key names), one story with the real rclone,
+  and two cloud sessions whose results a third lists and fetches.
+
 ## 0.4.0
 
 - A box can have several writer machines, each owning its own folders. The unit of ownership is a folder

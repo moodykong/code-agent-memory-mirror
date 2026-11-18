@@ -2,9 +2,9 @@
 
 One storage account, Azure AD sign-in only (--auth-mode login, never account
 keys or SAS), two containers:
-  inbound   the developer machine uploads untracked project files here
-            (box push); agents read it (box index, box fetch).
-  outbound  agents upload results here (box send); the developer pulls.
+  shared    developer machines upload untracked project files here (box push), each the
+            folders it owns; agents read it (box index, box fetch).
+  sessions  one folder per session (box send); every machine and session reads them.
 Blobs live under <prefix>/ in each container, at the same relative paths as
 in the project folder.
 """
@@ -17,14 +17,14 @@ import shutil
 import tempfile
 import time
 
-from agent_mirror.box import archive, owners
+from agent_mirror.box import archive, owners, sessions
 from agent_mirror.box.common import run_transfer
 from agent_mirror.box.local import FetchRecord, disk_guard
 from agent_mirror.box.sides import AzureSide
 from agent_mirror.box.rules import exclude_rule, folder_files, is_env_file
 from agent_mirror.box.units import archive_unit_of
 from agent_mirror.runtime import CLOUD_RUNTIMES
-from agent_mirror.util import err, local_path, out, short, show_cmd, utc_stamp, warn
+from agent_mirror.util import err, local_path, out, short, show_cmd, warn
 
 INDEX_PAGE_SIZE = 5000
 SP_VARS = ("AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "AZURE_TENANT_ID")
@@ -45,6 +45,12 @@ def az_failed(what, rc, stdout, stderr):
 
 def ready(dry_run):
     return az_ready(dry_run)
+
+
+def prepare(args, runtime):
+    """az is there and, on a cloud runtime, signed in: before any command that reads or writes the box."""
+    dry = getattr(args, "dry_run", False)
+    return az_ready(dry) and sign_in(runtime, args.timeout, dry_run=dry)
 
 
 def az_ready(dry_run):
@@ -168,7 +174,7 @@ def sync_plan(s, roots, archived=()):
 
 def sync_cmd(s, step, delete):
     cmd = ["az", "storage", "blob", "sync"] + storage_args(s)
-    cmd += ["--container", s["inbound"], "--source", step["source"]]
+    cmd += ["--container", s["shared"], "--source", step["source"]]
     # the trailing '/' makes azcopy treat a destination that does not exist yet as a folder
     cmd += ["--destination", "%s/%s/" % (s["prefix"], step["root"])]
     # az's own default is true; never delete unless asked
@@ -207,7 +213,7 @@ def push_folders(args, s, layout, folder_units):
                 err("sync of %s failed after %.1f s (%s)" % (step["root"], took, stderr or "rc %s" % rc))
                 ok = False
             else:
-                out("synced %s to %s/%s/%s/ in %.1f s" % (step["root"], s["inbound"], s["prefix"], step["root"], took))
+                out("synced %s to %s/%s/%s/ in %.1f s" % (step["root"], s["shared"], s["prefix"], step["root"], took))
         if ok:
             done.append(unit["name"])
         else:
@@ -223,7 +229,7 @@ def index(args, s, runtime):
         err("--page-size must be at least 1")
         return 2
     base = ["az", "storage", "blob", "list"] + storage_args(s)
-    base += ["--container-name", s["inbound"], "--prefix", s["prefix"] + "/"]
+    base += ["--container-name", s["shared"], "--prefix", s["prefix"] + "/"]
     base += ["--num-results", str(args.page_size), "--show-next-marker"]
     base += ["--query", INDEX_QUERY, "--only-show-errors", "-o", "json"]
     index_path = s["index_path"]
@@ -280,13 +286,16 @@ def index(args, s, runtime):
                 if not marker:
                     break
             for entry in archive.index_entries(
-                AzureSide(s, "inbound"), sidecars, os.path.dirname(index_path), args.transfer_timeout
+                AzureSide(s, "shared"), sidecars, os.path.dirname(index_path), args.transfer_timeout
             ):
                 fh.write(json.dumps(entry) + "\n")
             for line in owners.index_lines(
-                AzureSide(s, "inbound"), args.timeout, owners.OWNERS in has_marker, owners.LEGACY in has_marker
+                AzureSide(s, "shared"), args.timeout, owners.OWNERS in has_marker, owners.LEGACY in has_marker
             ):
                 fh.write(json.dumps(line) + "\n")
+            summary = sessions.index_line(s, args.timeout)
+            if summary is not None:
+                fh.write(json.dumps(summary) + "\n")
         os.replace(partial, index_path)
     finally:
         if os.path.exists(partial):
@@ -312,13 +321,13 @@ def pattern_escape(text):
 
 def download_cmd(s, blob, path):
     cmd = ["az", "storage", "blob", "download"] + storage_args(s)
-    cmd += ["--container-name", s["inbound"], "--name", blob, "--file", path, "--overwrite", "false"]
+    cmd += ["--container-name", s["shared"], "--name", blob, "--file", path, "--overwrite", "false"]
     return cmd + ["--no-progress", "--only-show-errors", "-o", "none"]
 
 
 def download_batch_cmd(s, blob, folder):
     cmd = ["az", "storage", "blob", "download-batch"] + storage_args(s)
-    cmd += ["--source", s["inbound"], "--destination", folder, "--pattern", pattern_escape(blob) + "/*"]
+    cmd += ["--source", s["shared"], "--destination", folder, "--pattern", pattern_escape(blob) + "/*"]
     return cmd + ["--no-progress", "--only-show-errors", "-o", "none"]
 
 
@@ -354,7 +363,7 @@ def fetch(args, s, runtime, rel):
         return 0
     blob = s["prefix"] + "/" + rel
     list_cmd = ["az", "storage", "blob", "list"] + storage_args(s)
-    list_cmd += ["--container-name", s["inbound"], "--prefix", blob, "--num-results", "*"]
+    list_cmd += ["--container-name", s["shared"], "--prefix", blob, "--num-results", "*"]
     list_cmd += ["--query", "[].{name:name, size:properties.contentLength}", "--only-show-errors", "-o", "json"]
     if args.dry_run:
         out("dry run: nothing will change")
@@ -391,7 +400,7 @@ def fetch(args, s, runtime, rel):
         return 1
     is_file = blob in names
     members = [n for n in names if n.startswith(blob + "/")]
-    where = "%s/%s" % (s["inbound"], blob)
+    where = "%s/%s" % (s["shared"], blob)
     if is_file and members:
         err("%s is both a blob and a folder; fetch a path inside it instead" % where)
         return 1
@@ -449,12 +458,12 @@ def link_or_copy(src, dest):
         shutil.copy2(src, dest)
 
 
-def send(args, s, runtime, rel):
+def send(args, s, runtime, rel, sid):
+    """Upload a file or folder into this session's namespace (a second send of a path replaces it)."""
     src = local_path(s["project_path"], rel)
     is_dir = os.path.isdir(src)
-    stamp = utc_stamp()
-    dest = "%s/%s-%s/%s" % (s["prefix"], runtime, stamp, rel)
-    where = "%s/%s" % (s["outbound"], dest)
+    dest = "%s/%s/%s" % (s["prefix"], sid, rel)
+    where = "%s/%s" % (s["sessions"], dest)
     keep, skipped = folder_files(src, rel, s["rules"]) if is_dir else ([], [])
     if is_dir:
         if skipped:
@@ -486,11 +495,11 @@ def send(args, s, runtime, rel):
                     err("could not prepare the filtered copy of %s: %s" % (rel, exc))
                     return 1
             cmd = ["az", "storage", "blob", "upload-batch"] + storage_args(s)
-            cmd += ["--destination", s["outbound"], "--destination-path", dest, "--source", source]
-            cmd += ["--overwrite", "false", "--no-progress", "--only-show-errors", "--query", "length(@)", "-o", "tsv"]
+            cmd += ["--destination", s["sessions"], "--destination-path", dest, "--source", source]
+            cmd += ["--overwrite", "true", "--no-progress", "--only-show-errors", "--query", "length(@)", "-o", "tsv"]
         else:
             cmd = ["az", "storage", "blob", "upload"] + storage_args(s)
-            cmd += ["--container-name", s["outbound"], "--name", dest, "--file", src, "--overwrite", "false"]
+            cmd += ["--container-name", s["sessions"], "--name", dest, "--file", src, "--overwrite", "true"]
             cmd += ["--no-progress", "--only-show-errors", "-o", "none"]
         if args.dry_run:
             out("would run: %s" % show_cmd(cmd))
@@ -519,8 +528,8 @@ def describe(s):
     prefix = s["prefix"]
     return [
         "azure-blob, storage account %s" % s["account"],
-        "inbound  %s/%s/  (box push writes, box index and box fetch read)" % (s["inbound"], prefix),
-        "outbound %s/%s/  (box send writes)" % (s["outbound"], prefix),
+        "shared   %s/%s/  (box push writes, box index and box fetch read)" % (s["shared"], prefix),
+        "sessions %s/%s/  (box send writes, one folder per session; box sessions lists them)" % (s["sessions"], prefix),
     ]
 
 

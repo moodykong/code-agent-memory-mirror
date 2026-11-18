@@ -208,7 +208,11 @@ def build_parser():
     s.add_argument("--minutes", type=int, default=30, help="minutes between syncs (default 30)")
     s.set_defaults(func=lazy("timer", "cmd_timer"))
 
-    s = sub.add_parser("box", parents=[common], help="move bulk files: push, index, ls, fetch, send, receive and more")
+    s = sub.add_parser(
+        "box",
+        parents=[common],
+        help="bulk files: a shared tree (push, ls, fetch) and per-session namespaces (send, sessions, promote)",
+    )
     box = s.add_subparsers(dest="box_action", metavar="action")
     box.required = True
     every = [common, timeout, proj, dry, transfer]
@@ -219,7 +223,7 @@ def build_parser():
         parents=every,
         help="upload the folders this machine owns or claims (developer machine only)",
         description="Upload this machine's folders of the box: each archived folder and each include folder "
-        "is owned by one machine (<inbound>/_owners.json). A folder nobody owns is claimed (recorded after "
+        "is owned by one machine (<shared>/_owners.json). A folder nobody owns is claimed (recorded after "
         "its upload), folders this machine owns are uploaded when changed, and folders another machine owns "
         "are skipped with a note saying whether the local copy is the same. A machine whose recorded role "
         "is reader or none is refused before any transfer.",
@@ -241,7 +245,7 @@ def build_parser():
         "owners",
         parents=[common, timeout, proj, transfer],
         help="list every folder of the box, its owner, and how the local copy compares (read-only)",
-        description="Read <inbound>/_owners.json (or the committed index when the transfer program is not "
+        description="Read <shared>/_owners.json (or the committed index when the transfer program is not "
         "available) and list every folder: its owning machine and since when, whether it is here, and the "
         "local copy against the owner's fingerprint: same, different, absent, fetched (only unchanged copies "
         "fetched from the box), unknown or unowned. Changes nothing.",
@@ -251,32 +255,114 @@ def build_parser():
         "release",
         parents=[common, timeout, proj, dry, transfer],
         help="give up ownership of folders this machine owns (deletes no data)",
-        description="Remove this machine's ownership entries for these folders from <inbound>/_owners.json, "
+        description="Remove this machine's ownership entries for these folders from <shared>/_owners.json, "
         "so another machine's next push claims them. Only the owning machine can release a folder; no box "
         "data is deleted. Developer machines only.",
     )
     b.add_argument("folders", nargs="+", metavar="FOLDER", help="a folder of the box, as `box owners` names it")
     b = box.add_parser(
-        "index", parents=every, help="list the inbound side into box_index.jsonl (with archive contents)"
+        "index",
+        parents=every,
+        help="list the shared side into box_index.jsonl (with archive contents, owners and a session summary)",
     )
     b.add_argument("--page-size", type=int, default=5000, help="azure-blob: blobs per listing call (default 5000)")
     b = box.add_parser("ls", parents=[common, proj, transfer], help="browse the box from the index, offline")
     b.add_argument("path", nargs="?", help="folder or file relative to the project folder (default: the top)")
-    b = box.add_parser("fetch", parents=every + [force], help="download a file or folder from the inbound side")
-    b.add_argument("path", help="path relative to the project folder")
+    b = box.add_parser(
+        "fetch",
+        parents=every + [force],
+        help="download from the shared tree, or a session's files with --session",
+        description="Download a file or folder of the shared tree into the project folder, or with --session ID "
+        "the files of one session (all of them, or PATH inside it) into <project>/_sessions/<session id>/. "
+        "Existing local files are never overwritten on a developer runtime, and the disk guard applies.",
+    )
+    b.add_argument("path", nargs="?", help="path relative to the project folder (with --session: inside the session)")
     b.add_argument("--all", action="store_true", help="archived folders: also fetch every large file")
-    b = box.add_parser("send", parents=every + [force], help="upload a file or folder to the outbound side")
+    b.add_argument(
+        "--session",
+        metavar="ID",
+        help="fetch from this session: its id, a unique start of the id, or its label (see `box sessions`)",
+    )
+    b.add_argument(
+        "--into",
+        metavar="DIR",
+        help="with --session: the target folder, relative to the project folder (default _sessions/<session id>; "
+        "`--into .` writes over the project tree, never overwriting files on a developer runtime)",
+    )
+    b = box.add_parser(
+        "send",
+        parents=every + [force],
+        help="upload a file or folder into this session's namespace on the sessions side",
+        description="Upload a file or folder into this session's namespace on the sessions side "
+        "(<sessions>/<session id>/), and record it in the session manifest. Every send of one session goes "
+        "to the same namespace; a second send of a path replaces it. Every machine and later session can "
+        "list it with `box sessions` and fetch it with `box fetch --session`.",
+    )
     b.add_argument("path", help="path relative to the project folder")
     b.add_argument("--archive", action="store_true", help="send a folder as one .tar.gz")
-    b = box.add_parser("receive", parents=every + [force], help="download the outbound side (developer machine only)")
+    b.add_argument(
+        "--label",
+        metavar="TEXT",
+        help="a short label for this session, set on first use (letters, digits, '-', '_', '.'; up to 60)",
+    )
+    b.add_argument(
+        "--new-session",
+        action="store_true",
+        help="start a new session (developer runtimes keep one for 24 hours; cloud runtimes one per machine)",
+    )
+    b = box.add_parser(
+        "sessions",
+        parents=[common, timeout, proj, transfer],
+        help="list the sessions in the box, newest first (read-only, any runtime)",
+        description="List the session namespaces on the sessions side, newest first: id, label, runtime, git "
+        "branch and short commit, file count, total size and when it was last updated. Reads one listing of "
+        "the sessions side and each listed session's manifest; older namespaces without a manifest are "
+        "listed from their files. Uses the committed index when the transfer program is missing.",
+    )
+    b.add_argument("--json", action="store_true", help="print JSON")
+    b.add_argument("--limit", type=int, default=20, metavar="N", help="show at most N sessions (default 20)")
+    b = box.add_parser(
+        "promote",
+        parents=every,
+        help="copy a session's file or folder into the shared tree, owned by this machine (developer machine only)",
+        description="Copy a file or folder of a session into the shared tree at FOLDER (default: the same path). "
+        "The files are downloaded into a temp folder, placed into this machine's copy of the folder (never over "
+        "a different local file), and that folder is pushed with the normal ownership of box push: claimed "
+        "when nobody owns it. Refused when the folder is owned by another machine or not covered by "
+        "box.include or box.archives. The promotion is recorded in the session manifest.",
+    )
+    b.add_argument("path", metavar="PATH", help="a file or folder inside the session")
+    b.add_argument("--session", required=True, metavar="ID", help="the session: id, unique start of the id, or label")
+    b.add_argument("--as", dest="as_folder", metavar="FOLDER", help="where it goes in the shared tree (default: PATH)")
+    b = box.add_parser(
+        "prune",
+        parents=[common, timeout, proj, dry, transfer],
+        help="delete session namespaces from the box (developer machine only; needs --yes)",
+        description="Delete session namespaces from the sessions side: those named with --session, and those "
+        "last updated more than --older-than DAYS ago. It always lists what it would delete with sizes and "
+        "deletes only with --yes. It never touches the shared tree and refuses names that do not look like "
+        "session ids.",
+    )
+    b.add_argument("--older-than", type=float, metavar="DAYS", help="sessions last updated more than DAYS days ago")
+    b.add_argument("--session", action="append", metavar="ID", help="a full session id (repeatable)")
+    b.add_argument("--keep-promoted", action="store_true", help="keep sessions with anything promoted from them")
+    b.add_argument("--yes", action="store_true", help="really delete (without it, only the list is shown)")
+    b = box.add_parser(
+        "receive",
+        parents=every + [force],
+        help="download every session not received yet (developer machine only)",
+        description="Download every session's files that are not in the receive folder yet, one folder per "
+        "session, never overwriting local files. To look first, use `agent-mirror box sessions`; to get one "
+        "session (or part of it) anywhere, use `agent-mirror box fetch --session ID [PATH]`.",
+    )
     b.add_argument(
         "--into", metavar="DIR", help="target folder (default: box.receive_dir, else <project>/_agent_outbound)"
     )
     b = box.add_parser("status", parents=[common, proj], help="what was fetched on this machine, and free disk")
     b = box.add_parser("evict", parents=[common, proj, dry], help="delete fetched copies to free disk (cloud only)")
-    b.add_argument("path", help="path relative to the project folder")
+    b.add_argument("path", help="path relative to the project folder (a fetched session: _sessions/<session id>)")
     b.add_argument("--force", action="store_true", help="allow it on a local runtime")
-    b = box.add_parser("mount", parents=every, help="rclone: mount the inbound side read-only (needs FUSE)")
+    b = box.add_parser("mount", parents=every, help="rclone: mount the shared side read-only (needs FUSE)")
     b.add_argument("--cache-max-size", default="10G", help="cap for the local file cache (default 10G)")
     b = box.add_parser("unmount", parents=every, help="rclone: unmount what box mount mounted")
     b = box.add_parser(

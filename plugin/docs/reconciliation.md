@@ -234,7 +234,7 @@ On a cloud runtime, `session-start` does the same for the runtime's agent.
 ## Folder owners
 
 A box can have several writer machines. Each folder unit of the box has one owning machine, recorded on
-the inbound side in `_owners.json`:
+the shared side in `_owners.json`:
 
 ```json
 {

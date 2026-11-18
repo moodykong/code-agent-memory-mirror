@@ -15,7 +15,7 @@ Both can be unit-tested on any OS by passing a platform name and an environment 
 
 | | Linux (including WSL 2) | macOS | Windows (native) |
 | --- | --- | --- | --- |
-| Test suite | runs and passes (Python 3.9 and 3.10) | UNVERIFIED | runs and passes natively (Python 3.11, Windows 11), under the sandbox guard, from a copy in the temp folder; one POSIX-shell test skipped; the real profile's before and after fingerprints were identical (0.3.0, and again for 0.4.0) |
+| Test suite | runs and passes (Python 3.9 and 3.10) | UNVERIFIED | runs and passes natively (Python 3.11, Windows 11), under the sandbox guard, from a copy in the temp folder; one POSIX-shell test skipped; the real profile's before and after fingerprints were identical (0.3.0, and again for 0.4.0 and 0.5.0) |
 | Folder mapping (homes, config, cache) | verified | unit-tested only | verified under `AGENT_MIRROR_HOME`; the real-profile mapping (USERPROFILE, APPDATA) unit-tested only; Claude home verified |
 | Claude memory folder name (slug) | verified | UNVERIFIED | verified (see below) |
 | Links | symlinks, verified | symlinks, UNVERIFIED | symlinks verified (Developer Mode on); real junctions verified by test; managed copies verified with a simulated symlink failure only |
@@ -83,6 +83,8 @@ Verified by the test suite running natively on Windows 11 (Python 3.11), inside 
   contents; rendered shell scripts written with LF line endings;
 - box folder owners (`_owners.json`) and nested archive names, with the fake `az` and `rclone` and with a
   real Windows rclone against local folders (0.4.0);
+- session namespaces (send, manifest, `box sessions`, `box fetch --session`, promote, prune, receive) with
+  the fake `az` and `rclone` and a real Windows rclone against local folders (0.5.0);
 - multi-repo discovery, cloud render, runbooks, cloud secrets and the timer dry run (schtasks).
 
 Everything else about Windows below is still UNVERIFIED, in particular how Claude Code on Windows runs hook

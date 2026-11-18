@@ -37,7 +37,7 @@ def cmd_receive(args, s, runtime):
         err("refusing box receive on %s: results are received on the developer machine" % runtime)
         return 2
     into = receive_dir(s, args.into)
-    side = side_for(s, "outbound")
+    side = side_for(s, "sessions")
     if args.dry_run:
         out("dry run: nothing will change")
         out("would run: %s" % show_cmd(side.list_cmd("")))
@@ -148,7 +148,7 @@ def cmd_mount(args, s, plat):
         err("--cache-max-size takes a size like 10G or 500M (got %r)" % args.cache_max_size)
         return 2
     folder = mount_dir(s)
-    cmd = mount_cmd(s["inbound"], folder, args.cache_max_size, plat.windows)
+    cmd = mount_cmd(s["shared"], folder, args.cache_max_size, plat.windows)
     ok, reason = fuse_status(plat.name)
     if args.dry_run:
         out("dry run: nothing will change")
@@ -178,7 +178,7 @@ def cmd_mount(args, s, plat):
         ensure_git_exclude(s["project_path"], folder)
     out(
         "mounted %s read-only at %s (VFS cache up to %s; files download when opened)"
-        % (s["inbound"], folder, args.cache_max_size)
+        % (s["shared"], folder, args.cache_max_size)
     )
     return 0
 
@@ -247,7 +247,7 @@ def rclone_remote_values(name):
     if name != name.lower():
         warnings.append(
             "a remote defined by these variables is named %s (lower case) on the other machine; use %s: "
-            "in box.inbound_remote and box.outbound_remote there" % (name.lower(), name.lower())
+            "in box.shared_remote and box.sessions_remote there" % (name.lower(), name.lower())
         )
     if "token" in remote:
         expiry = ""

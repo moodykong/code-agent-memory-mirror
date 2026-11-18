@@ -74,12 +74,13 @@ If there is no clipboard tool on this machine, tell the user which file to open 
 
 ### 6. First session
 
-Give the user the first-session prompt from the runbook and ask them to start a session with the new environment on the repos they want. The prompt sends the probe report to the outbound side of the box, so it can be read back without copying.
+Give the user the first-session prompt from the runbook and ask them to start a session with the new environment on the repos they want. The prompt sends the probe report into that session's namespace on the sessions side of the box, so it can be read back without copying (`agent-mirror box sessions` lists it).
 
 When the user says it ran:
 
 ```
-agent-mirror box receive --project <name>
+agent-mirror box sessions --project <name>
+agent-mirror box fetch --session <session id> --project <name>
 ```
 
 Read the report against the checklist in the runbook README. For each failure, name the likely cause and the fix, then ask before changing the project config. After a change, render again (`agent-mirror cloud render`), commit the store, and repeat the affected step.

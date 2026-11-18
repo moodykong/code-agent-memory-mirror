@@ -40,6 +40,8 @@ These apply in every runtime, local and cloud. The credentials an agent holds ma
 These apply when `agent-mirror detect` prints `claude-cloud` or `codex-cloud`.
 - Untracked project files live in the box, not in the clone. When an expected file or folder is missing, look it up with `agent-mirror box ls [path]` and fetch it with `agent-mirror box fetch <path>` instead of concluding that it does not exist.
 - The machine has little disk. Before a large fetch, check `agent-mirror box status` and free space with `agent-mirror box evict <path>` if needed. Fetch large data only when the task needs it.
-- The machine is thrown away after the session. Before finishing, upload anything worth keeping with `agent-mirror box send <path>`.
+- Earlier sessions may have produced what the task needs. Run `agent-mirror box sessions` to see their results, and fetch one with `agent-mirror box fetch --session <id or label> [path]` (it lands in `_sessions/<session id>/`).
+- The machine is thrown away after the session. Before finishing, upload anything worth keeping with `agent-mirror box send <path> --label <short-name>`; every send of this session goes into the same session, and later sessions can list and fetch it.
+- A cloud session never writes the shared tree of the box. Results worth keeping for good are promoted into it by the user's own machine (`agent-mirror box promote`), so say which session and path should be promoted.
 - Run `agent-mirror sync` after writing a memory and again before finishing.
 - In a cloud session, `agent-mirror sync` pushes to an inbox branch of the store, not to its main branch. Memory reaches other machines after a developer machine syncs; changes to these instructions, skills or project settings made in a cloud session wait for the user's review (`agent-mirror review`).

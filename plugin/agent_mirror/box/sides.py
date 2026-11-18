@@ -1,4 +1,4 @@
-"""One side of the box (inbound or outbound) as a small set of file operations.
+"""One side of the box (shared or sessions) as a small set of file operations.
 
 Archives, receive and the archive index need the same few operations on both
 backends: put one file, get one file, read a small file, list everything under
@@ -8,6 +8,7 @@ rclone: the configured remote path).
 
 import json
 import os
+import re
 import shutil
 
 from agent_mirror.box.common import run_transfer
@@ -92,6 +93,62 @@ class AzureSide:
     def copy_down(self, dest, timeout, keep_existing=True):
         return None  # no single command for this backend; the caller gets files one by one
 
+    def dirs_cmd(self, rel=""):
+        cmd = ["az", "storage", "blob", "list"] + self._storage()
+        cmd += ["--container-name", self.container, "--prefix", self.blob(rel) + "/", "--delimiter", "/"]
+        return cmd + ["--num-results", "*", "--query", "[].name", "--only-show-errors", "-o", "json"]
+
+    def dirs(self, rel, timeout):
+        """The folder names one level below rel, or None on an error.
+
+        Asks for a '/' delimiter; when the listing comes back flat anyway, the first path parts are used.
+        """
+        rc, stdout, _ = run_transfer(self.dirs_cmd(rel), timeout)
+        if rc != 0:
+            return None
+        try:
+            names = json.loads(stdout or "[]")
+        except ValueError:
+            return None
+        cut = len(self.blob(rel)) + 1
+        found = set()
+        for n in names:
+            n = n.get("name") if isinstance(n, dict) else n
+            if not isinstance(n, str) or len(n) <= cut:
+                continue
+            rest = n[cut:]
+            if "/" in rest:
+                found.add(rest.split("/", 1)[0])
+        return sorted(found)
+
+    def get_many(self, base, rels, stage, timeout):
+        """Download base/<rel> for each rel to stage/<rel>. 'ok' or an error message."""
+        for r in rels:
+            got = self.get(base + "/" + r, os.path.join(stage, *r.split("/")), timeout)
+            if got != "ok":
+                return "%s: %s" % (r, got)
+        return "ok"
+
+    def get_present(self, base, rels, stage, timeout):
+        """Download the files of rels that exist under base into stage. (set of rels that arrived, problem)."""
+        found = set()
+        for r in rels:
+            got = self.get(base + "/" + r, os.path.join(stage, *r.split("/")), timeout)
+            if got == "ok":
+                found.add(r)
+            elif got != "missing":
+                return found, got
+        return found, None
+
+    def delete_tree_cmd(self, rel):
+        pattern = re.sub(r"([*?\[])", r"[\1]", self.blob(rel)) + "/*"
+        cmd = ["az", "storage", "blob", "delete-batch"] + self._storage()
+        return cmd + ["--source", self.container, "--pattern", pattern, "--only-show-errors", "-o", "none"]
+
+    def delete_tree(self, rel, timeout):
+        rc, stdout, stderr = run_transfer(self.delete_tree_cmd(rel), timeout)
+        return rc == 0, short(stderr or stdout or "rc %s" % rc, 400)
+
     def cat(self, rel, timeout):
         """The text of a small remote file, or None when it does not exist or cannot be read."""
         tmp = current().mkdtemp("agent-mirror-cat-")
@@ -155,6 +212,63 @@ class RcloneSide:
             for it in items
             if isinstance(it, dict) and it.get("Path") and not it.get("IsDir")
         ]
+
+    def dirs_cmd(self, rel=""):
+        return ["rclone", "lsjson", "--dirs-only", "--no-mimetype", self.where(rel)]
+
+    def dirs(self, rel, timeout):
+        rc, stdout, _ = run_transfer(self.dirs_cmd(rel), timeout)
+        if rc in MISSING_RC:
+            return []
+        if rc != 0:
+            return None
+        try:
+            items = json.loads(stdout or "[]")
+        except ValueError:
+            return None
+        return sorted(it.get("Path") for it in items if isinstance(it, dict) and it.get("Path") and it.get("IsDir"))
+
+    def copy_listed(self, base, rels, stage, timeout):
+        """`rclone copy --files-from` of rels under base into stage (rclone skips missing ones). Problem or None."""
+        os.makedirs(stage, exist_ok=True)
+        fd, listfile = current().mkstemp("agent-mirror-files-", ".txt")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write("\n".join(rels) + "\n")
+            cmd = ["rclone", "copy", self.where(base), stage, "--files-from", listfile]
+            rc, stdout, stderr = run_transfer(cmd, timeout)
+        finally:
+            try:
+                os.unlink(listfile)
+            except OSError:
+                pass
+        if rc == 0 or rc in MISSING_RC:
+            return None  # a folder that does not exist yet holds none of them
+        return short(stderr or stdout or "rc %s" % rc, 400)
+
+    def get_many(self, base, rels, stage, timeout):
+        """One `rclone copy --files-from` for every rel under base, into stage. 'ok' or an error message."""
+        if not rels:
+            return "ok"
+        problem = self.copy_listed(base, rels, stage, timeout)
+        if problem:
+            return problem
+        missing = [r for r in rels if not os.path.isfile(os.path.join(stage, *r.split("/")))]
+        return "ok" if not missing else "%d file(s) did not arrive, for example %s" % (len(missing), missing[0])
+
+    def get_present(self, base, rels, stage, timeout):
+        """One `rclone copy --files-from` for rels under base (missing ones are skipped). (arrived, problem)."""
+        if not rels:
+            return set(), None
+        problem = self.copy_listed(base, rels, stage, timeout)
+        return set(r for r in rels if os.path.isfile(os.path.join(stage, *r.split("/")))), problem
+
+    def delete_tree_cmd(self, rel):
+        return ["rclone", "purge", self.where(rel)]
+
+    def delete_tree(self, rel, timeout):
+        rc, stdout, stderr = run_transfer(self.delete_tree_cmd(rel), timeout)
+        return rc == 0, short(stderr or stdout or "rc %s" % rc, 400)
 
     def copy_down_cmd(self, dest, keep_existing=True):
         return ["rclone", "copy", self.root, dest] + (["--ignore-existing"] if keep_existing else [])

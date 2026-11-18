@@ -119,6 +119,11 @@ ON_DEMAND = (
     "frees space with `agent-mirror box evict <path>`. Fetches refuse to run when they would leave less than\n"
     "`box.min_free_bytes` (default 2 GiB) free. Archived folders fetch their bundle only; large files are\n"
     "listed with the exact command to fetch each one.\n"
+    "\nSessions: `agent-mirror box send <path> --label <name>` uploads results into this session's own\n"
+    "namespace on the sessions side. `agent-mirror box sessions` lists what earlier sessions produced and\n"
+    "`agent-mirror box fetch --session <id or label> [path]` downloads it into `_sessions/<session id>/`.\n"
+    "Cloud sessions never write the shared tree; results worth keeping are promoted by the user's own\n"
+    "machine (`agent-mirror box promote`).\n"
 )
 
 
@@ -132,7 +137,8 @@ def box_note(box):
             "allow the hosts that install needs. agent-mirror signs `az` in as a service principal from\n"
             "`AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` and `AZURE_TENANT_ID` when `az account show` fails; the\n"
             "secret goes to `az` on stdin and never appears in output. Give that identity read access to the\n"
-            "inbound container and write access to the outbound container only.\n" + ON_DEMAND
+            "shared container and read and write access to the sessions container only (it lists and reads\n"
+            "other sessions there).\n" + ON_DEMAND
         )
     if backend == "rclone":
         return (
@@ -141,8 +147,8 @@ def box_note(box):
             "A cloud machine has no rclone config file, so the remote is defined by environment variables:\n"
             "rclone reads a remote named `<remote>` from variables called `RCLONE_CONFIG_<REMOTE>_<KEY>`\n"
             "(for example `RCLONE_CONFIG_MYDRIVE_TYPE`, `_TOKEN`, `_DRIVE_ID`, `_DRIVE_TYPE`). Such a remote is\n"
-            "named in lower case (`mydrive:`), so use lower-case remote names in box.inbound_remote and\n"
-            "box.outbound_remote. On the developer machine, `agent-mirror box rclone-env --remote mydrive` prints\n"
+            "named in lower case (`mydrive:`), so use lower-case remote names in box.shared_remote and\n"
+            "box.sessions_remote. On the developer machine, `agent-mirror box rclone-env --remote mydrive` prints\n"
             "the variable NAMES (add them to env_var_names, then re-render), and `--out FILE` writes the values to\n"
             "an owner-only file to copy onto the settings page. An OAuth token stored this way cannot be refreshed\n"
             "on a throwaway machine: replace it on the settings page before it expires.\n"

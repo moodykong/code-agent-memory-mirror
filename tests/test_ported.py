@@ -470,8 +470,8 @@ class PortedTest(ToolTest):
         self.assertEqual(lines[0], {"path": "docs/slides/d.pptx", "size": 4, "modtime": stamp})
         self.assertIn("left out 1 blobs", out)
         self.assertFalse(os.path.exists(self.s("projects", "demo", "box_index.jsonl")))
-        lists = self.az_calls("storage", "blob", "list")
-        self.assertEqual(len(lists), 2)
+        lists = [c for c in self.az_calls("storage", "blob", "list") if "--delimiter" not in c["argv"]]
+        self.assertEqual(len(lists), 2)  # the shared side, paged (the other listing is the sessions summary)
         self.assertNotIn("--marker", lists[0]["argv"])
         self.assertEqual(lists[1]["argv"][lists[1]["argv"].index("--marker") + 1], "2")
         self.assertEqual(lists[0]["argv"][lists[0]["argv"].index("--prefix") + 1], "demo/")
@@ -542,8 +542,8 @@ class PortedTest(ToolTest):
         self.assertRegex(
             out,
             r"would run: az storage blob upload --account-name testacct --auth-mode login --container-name out-box "
-            r"--name demo/codex-cloud-\d{8}T\d{6}Z/temporary/result\.csv --file '?\S+[/\\]temporary[/\\]result\.csv'? "
-            r"--overwrite false",
+            r"--name demo/codex-cloud-\d{8}T\d{6}Z-[0-9a-f]{6}/temporary/result\.csv "
+            r"--file '?\S+[/\\]temporary[/\\]result\.csv'? --overwrite true",
         )
         for bad in (
             ".env",
@@ -567,7 +567,7 @@ class PortedTest(ToolTest):
         call = self.az_calls("storage", "blob", "upload-batch")[0]
         self.assertEqual(call["files"], ["out.csv", "sub/plot.png"])
         dest = call["argv"][call["argv"].index("--destination-path") + 1]
-        self.assertRegex(dest, r"^demo/claude-local-\d{8}T\d{6}Z/temporary/run$")
+        self.assertRegex(dest, r"^demo/claude-local-\d{8}T\d{6}Z-[0-9a-f]{6}/temporary/run$")
         self.assertIn("uploaded 2 files to out-box/" + dest + "/", out)
         self.assertEqual(glob.glob(self.p(".agent-mirror-send-*")), [])
         self.assertTrue(os.path.isfile(self.p("temporary", "run", ".env")))  # the source is never touched
@@ -597,7 +597,8 @@ class PortedTest(ToolTest):
         for flag in ("--service-principal", "--password=@-", "--allow-no-subscriptions"):
             self.assertIn(flag, login["argv"])
         self.assertEqual(login["argv"][login["argv"].index("--username") + 1], "client-id-1")
-        self.assertEqual(self.az_calls()[-1]["argv"][:3], ["storage", "blob", "upload"])
+        uploads = [c["argv"] for c in self.az_calls("storage", "blob", "upload")]
+        self.assertTrue(any(a[a.index("--name") + 1].endswith("/temporary/result.csv") for a in uploads))
         self.assertNotIn(secret, read(self.az_log))
         self.assertNotIn(secret, out)
 
@@ -622,8 +623,9 @@ class PortedTest(ToolTest):
         self.assertEqual(rc, 0, out)
         self.assertIn("ok      az (", out)
         self.assertIn("demo: azure-blob, storage account testacct", out)
-        self.assertIn("inbound  in-box/demo/", out)
-        self.assertIn("outbound out-box/demo/", out)
+        self.assertIn("shared   in-box/demo/", out)
+        self.assertIn("sessions out-box/demo/", out)
+        self.assertIn("the config uses the older key names inbound_container, outbound_container", out)
         self.assertIn("store: %s (from AGENT_MIRROR_STORE)" % self.store, out)
         self.assertIn("CLAUDE.md: ok (imports @AGENTS.md)", out)
         self.assertNotIn("PROBLEM", out)

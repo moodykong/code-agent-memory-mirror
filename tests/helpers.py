@@ -337,7 +337,12 @@ if os.environ.get("FAKE_AZ_BLOBS"):
         blobs = sorted(json.load(fh), key=lambda b: b["name"])
 # FAKE_AZ_ROOT, when set, is a folder standing in for the containers: uploads land there
 root = os.environ.get("FAKE_AZ_ROOT")
-container = opt("--container-name") or opt("--source") or opt("--destination")
+if argv[:3] == ["storage", "blob", "upload-batch"]:
+    container = opt("--destination")  # --source is the local folder
+elif argv[:3] in (["storage", "blob", "download-batch"], ["storage", "blob", "delete-batch"]):
+    container = opt("--source")
+else:
+    container = opt("--container-name") or opt("--source") or opt("--destination")
 
 
 def stored_path(name):
@@ -370,7 +375,16 @@ if argv[:1] == ["login"]:
         finish(1)
     finish(0)
 if argv[:3] == ["storage", "blob", "list"]:
-    hits = [b for b in blobs if b["name"].startswith(opt("--prefix", ""))]
+    prefix = opt("--prefix", "")
+    hits = [b for b in blobs if b["name"].startswith(prefix)]
+    if opt("--delimiter") == "/":
+        names = []
+        for b in hits:
+            rest = b["name"][len(prefix):]
+            n = prefix + rest.split("/", 1)[0] + "/" if "/" in rest else b["name"]
+            if n not in names:
+                names.append(n)
+        finish(0, json.dumps(names))
     if opt("--query") == "[].name":
         finish(0, json.dumps([b["name"] for b in hits]))
     if opt("--num-results") == "*":
@@ -385,8 +399,22 @@ if argv[:3] == ["storage", "blob", "download-batch"]:
         if fnmatch.fnmatchcase(b["name"], opt("--pattern")):
             path = os.path.join(opt("--destination"), b["name"])
             os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "w") as fh:
-                fh.write("remote " + b["name"])
+            if b.get("stored"):
+                shutil.copyfile(stored_path(b["name"]), path)
+            else:
+                with open(path, "w") as fh:
+                    fh.write("remote " + b["name"])
+    finish(0)
+if argv[:3] == ["storage", "blob", "delete-batch"]:
+    gone = 0
+    for b in blobs:
+        if b.get("stored") and fnmatch.fnmatchcase(b["name"], opt("--pattern")):
+            os.remove(stored_path(b["name"]))
+            gone += 1
+    for r, ds, fs in os.walk(os.path.join(root, container), topdown=False):
+        if not os.listdir(r) and r != os.path.join(root, container):
+            os.rmdir(r)  # blob storage has no folders of its own
+    entry["deleted"] = gone
     finish(0)
 if argv[:3] == ["storage", "blob", "download"]:
     name = opt("--name")
@@ -415,6 +443,11 @@ if argv[:3] == ["storage", "blob", "upload-batch"]:
     entry["files"] = sorted(
         os.path.relpath(os.path.join(r, f), src).replace(os.sep, "/") for r, _, fs in os.walk(src) for f in fs
     )
+    if root:
+        for f in entry["files"]:
+            dest = stored_path(opt("--destination-path") + "/" + f)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            shutil.copyfile(os.path.join(src, *f.split("/")), dest)
     finish(0, str(len(entry["files"])))
 finish(0)
 """
@@ -499,6 +532,67 @@ def stored_files():
 
 
 all_files = sorted(set(files) | set(stored_files()))
+
+
+def under_inbound(remote):
+    return bool(inbound) and remote.startswith(inbound)
+
+
+def walk(base):
+    found = []
+    for r, _, fs in os.walk(base):
+        for f in fs:
+            found.append(os.path.relpath(os.path.join(r, f), base).replace(os.sep, "/"))
+    return sorted(found)
+
+
+if argv[:1] == ["lsjson"] and "--dirs-only" in argv:
+    base = stored(argv[-1])
+    if not base or not os.path.isdir(base):
+        finish(3, stderr="error: directory not found")
+    dirs = sorted(d for d in os.listdir(base) if os.path.isdir(os.path.join(base, d)))
+    finish(0, json.dumps([{"Path": d, "Name": d, "Size": -1, "ModTime": "2026-01-01T00:00:00Z", "IsDir": True} for d in dirs]))
+if argv[:1] == ["lsjson"] and "--stat" not in argv and not under_inbound(argv[-1]) and stored(argv[-1]):
+    base = stored(argv[-1])
+    if not os.path.isdir(base):
+        finish(3, stderr="error: directory not found")
+    finish(0, json.dumps([{"Path": f, "Name": f.rsplit("/", 1)[-1], "Size": os.path.getsize(os.path.join(base, *f.split("/"))), "ModTime": "2026-01-01T00:00:00Z", "IsDir": False} for f in walk(base)]))
+if argv[:1] == ["purge"]:
+    base = stored(argv[1])
+    if base and os.path.isdir(base):
+        shutil.rmtree(base)
+    finish(0)
+if argv[:1] == ["copyto"] and is_remote(argv[1]) and not under_inbound(argv[1]):
+    src = stored(argv[1])
+    if not (src and os.path.isfile(src)):
+        finish(3, stderr="error: object not found")
+    if not ("--ignore-existing" in argv and os.path.exists(argv[2])):
+        os.makedirs(os.path.dirname(os.path.abspath(argv[2])), exist_ok=True)
+        shutil.copyfile(src, argv[2])
+    finish(0)
+if argv[:1] == ["copy"] and is_remote(argv[1]) and stored(argv[1]) and os.path.isdir(stored(argv[1])):
+    base = stored(argv[1])
+    wanted = walk(base) if base and os.path.isdir(base) else []
+    if "--files-from" in argv:
+        with open(argv[argv.index("--files-from") + 1]) as fh:
+            wanted = [w for w in fh.read().split() if w]
+    for f in wanted:
+        src = os.path.join(base, *f.split("/"))
+        dest = os.path.join(argv[2], *f.split("/"))
+        if not os.path.isfile(src) or ("--ignore-existing" in argv and os.path.exists(dest)):
+            continue
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        shutil.copyfile(src, dest)
+    finish(0)
+if argv[:1] == ["copy"] and not is_remote(argv[1]) and "--files-from" in argv and stored(argv[2]):
+    with open(argv[argv.index("--files-from") + 1]) as fh:
+        listed = [w for w in fh.read().split() if w]
+    for f in listed:
+        dest = os.path.join(stored(argv[2]), *f.split("/"))
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        shutil.copyfile(os.path.join(argv[1], *f.split("/")), dest)
+    entry["files_from"] = listed
+    finish(0)
 
 if argv[:1] == ["lsjson"] and "--stat" in argv:
     rel = rel_of(argv[-1])
@@ -659,10 +753,14 @@ class ToolTest(unittest.TestCase):
         write(path, json.dumps(env))
 
     def fake_az(self, blobs=None):
-        """Put the fake az first on PATH; returns the env for run_tool."""
+        """Put the fake az first on PATH; returns the env for run_tool. Uploads land in base/fake-containers."""
         fakebin = install_fake(self.base, "az", FAKE_AZ)
         self.az_log = os.path.join(self.base, "az_log.jsonl")
-        env = {"PATH": fakebin + os.pathsep + os.environ.get("PATH", ""), "FAKE_AZ_LOG": self.az_log}
+        env = {
+            "PATH": fakebin + os.pathsep + os.environ.get("PATH", ""),
+            "FAKE_AZ_LOG": self.az_log,
+            "FAKE_AZ_ROOT": os.path.join(self.base, "fake-containers"),
+        }
         if blobs is not None:
             env["FAKE_AZ_BLOBS"] = os.path.join(self.base, "blobs.json")
             write(env["FAKE_AZ_BLOBS"], json.dumps(blobs))

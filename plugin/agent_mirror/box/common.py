@@ -12,8 +12,30 @@ from agent_mirror.util import err, exe_path, expand, out, scrub, tilde
 
 DEFAULT_TRANSFER_TIMEOUT = 21600
 INDEX_NAME = "box_index.jsonl"
-AZURE_KEYS = ("storage_account", "inbound_container", "outbound_container", "prefix")
 BACKENDS = ("azure-blob", "rclone", "none")
+# the two sides of a box: (new key, older key) per backend; the older names still work
+SIDE_KEYS = {
+    "azure-blob": {"shared": ("shared_container", "inbound_container"), "sessions": ("sessions_container", "outbound_container")},
+    "rclone": {"shared": ("shared_remote", "inbound_remote"), "sessions": ("sessions_remote", "outbound_remote")},
+}
+
+
+def side_setting(box, backend, side):
+    """The configured location of one side (shared or sessions), from the new key or the older one."""
+    new, old = SIDE_KEYS[backend][side]
+    value = str(box.get(new) or "").strip()
+    return value or str(box.get(old) or "").strip()
+
+
+def old_side_keys(box, backend):
+    """The older key names (inbound_*, outbound_*) a box config still uses."""
+    keys = SIDE_KEYS.get(backend) or {}
+    return [old for new, old in keys.values() if str(box.get(old) or "").strip() and not str(box.get(new) or "").strip()]
+
+
+def side_key_names(backend, side):
+    new, old = SIDE_KEYS[backend][side]
+    return "box.%s (or the older box.%s)" % (new, old)
 
 
 def box_context(args, ctx):
@@ -44,6 +66,7 @@ def box_context(args, ctx):
         "project_path": project_path,
         "env_path": path,
         "index_path": os.path.join(os.path.dirname(path), INDEX_NAME),
+        "repo": env.get("repo"),
         "include": list(box.get("include") or []),
         "exclude": list(box.get("exclude") or []),
         "box": box,
@@ -55,9 +78,10 @@ def box_context(args, ctx):
                 "(fill it once the storage account exists); nothing to do" % tilde(path)
             )
             return None, 0
-        missing = [k for k in AZURE_KEYS if not str(box.get(k) or "").strip()]
+        missing = ["box." + k for k in ("storage_account", "prefix") if not str(box.get(k) or "").strip()]
+        missing += [side_key_names(backend, side) for side in ("shared", "sessions") if not side_setting(box, backend, side)]
         if missing:
-            err("box settings in %s lack %s" % (tilde(path), ", ".join("box." + k for k in missing)))
+            err("box settings in %s lack %s" % (tilde(path), ", ".join(missing)))
             return None, 2
         prefix = clean_rel(str(box["prefix"]))
         if prefix is None:
@@ -67,26 +91,26 @@ def box_context(args, ctx):
         s.update(
             {
                 "account": str(box["storage_account"]).strip(),
-                "inbound": str(box["inbound_container"]).strip(),
-                "outbound": str(box["outbound_container"]).strip(),
+                "shared": side_setting(box, backend, "shared"),
+                "sessions": side_setting(box, backend, "sessions"),
                 "prefix": prefix,
             }
         )
     else:
-        inbound = str(box.get("inbound_remote") or "").strip()
-        outbound = str(box.get("outbound_remote") or "").strip()
-        if not inbound and not outbound:
+        shared = side_setting(box, backend, "shared")
+        sessions = side_setting(box, backend, "sessions")
+        if not shared and not sessions:
             out(
-                "box not configured yet: box.inbound_remote and box.outbound_remote are empty in %s; nothing to do"
+                "box not configured yet: box.shared_remote and box.sessions_remote are empty in %s; nothing to do"
                 % tilde(path)
             )
             return None, 0
-        missing = [k for k, v in (("inbound_remote", inbound), ("outbound_remote", outbound)) if not v]
+        missing = [side_key_names(backend, side) for side, v in (("shared", shared), ("sessions", sessions)) if not v]
         if missing:
-            err("box settings in %s lack %s" % (tilde(path), ", ".join("box." + k for k in missing)))
+            err("box settings in %s lack %s" % (tilde(path), ", ".join(missing)))
             return None, 2
         problems = generic_rule_problems(box)
-        s.update({"inbound": inbound, "outbound": outbound})
+        s.update({"shared": shared, "sessions": sessions})
     problems = problems + archive_problems(box)
     if problems:
         for p in problems:

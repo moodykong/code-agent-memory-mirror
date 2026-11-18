@@ -200,8 +200,7 @@ class RcloneWriterTest(WriterMarkerMixin, ToolTest):
         return [
             c
             for c in self.tool_calls()
-            if c[0] in ("copy", "sync")
-            or (c[0] == "copyto" and not c[1].startswith(self.INBOUND))
+            if (c[0] in ("copy", "sync") or c[0] == "copyto") and not c[1].startswith(self.INBOUND)
         ]
 
 

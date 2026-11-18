@@ -13,7 +13,7 @@ Three parts, kept separate:
 |---|---|---|
 | Store | A private git repo with instructions, personal skills, memory and per-project config. Data only. | The user chooses the repo and account |
 | Program | `agent-mirror`: links, syncs, moves bulk files, renders cloud settings, probes | This plugin |
-| Box | Optional external storage for bulk untracked files (inbound and outbound) | The user chooses the backend |
+| Box | Optional external storage for bulk untracked files (a shared tree and per-session namespaces) | The user chooses the backend |
 
 Project repos are never changed and never refer to the store.
 

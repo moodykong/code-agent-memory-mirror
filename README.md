@@ -118,11 +118,14 @@ on the vendor's settings page.
 | `timer install\|uninstall\|status [--minutes 30]` | periodic `sync`: systemd user timer, launchd agent or Windows scheduled task |
 | `box push [--only FOLDER]... [--take-over [FOLDER]]... [--delete]` | upload the box folders this machine owns or claims; folders another machine owns are skipped with a note (same or different here) |
 | `box owners [--json]`, `box release FOLDER...` | list every folder of the box with its owning machine and how the local copy compares (read-only); give up folders this machine owns (no data deleted) |
-| `box index`, `box fetch PATH [--all]`, `box send PATH [--archive]` | list the box into the store, fetch on demand, send results; Azure blob storage or any rclone remote |
+| `box index`, `box fetch PATH [--all]` | list the shared tree into the store (with owners and a session summary), fetch on demand; Azure blob storage or any rclone remote |
+| `box send PATH [--archive] [--label TEXT] [--new-session]` | upload results into this session's own namespace on the sessions side, recorded in its manifest |
+| `box sessions [--json] [--limit N]`, `box fetch --session ID [PATH] [--into DIR]` | list what earlier sessions produced, newest first; download a session's files (by id, unique start of the id, or label) into `_sessions/<id>/`; any runtime |
+| `box promote --session ID PATH [--as FOLDER]`, `box prune [--older-than DAYS] [--session ID]... [--keep-promoted] [--yes]` | developer machines: copy a session's file or folder into the shared tree, owned by this machine; delete old session namespaces (lists first, needs `--yes`) |
 | `box candidates [--json] [--min-bytes N]` | list the project's untracked and ignored entries with sizes and a kind guess, to choose what goes in the box; read-only |
 | `box ls [PATH]`, `box status`, `box evict PATH` | browse the box offline, see what was fetched here, delete fetched copies to free disk |
-| `box receive [--into DIR]` | download the agents' results from the outbound side (developer machine) |
-| `box mount\|unmount [--cache-max-size 10G]` | rclone: mount the inbound side read-only with a capped cache (needs FUSE) |
+| `box receive [--into DIR]` | download every session not received yet, one folder per session (developer machine) |
+| `box mount\|unmount [--cache-max-size 10G]` | rclone: mount the shared side read-only with a capped cache (needs FUSE) |
 | `box rclone-env --remote NAME [--out FILE]` | turn a local rclone remote into `RCLONE_CONFIG_*` variables for a cloud machine |
 | `cloud render --project NAME [--vendor claude\|codex\|all]` | write paste-ready setup scripts, host list, variable names, `runbook.json` and steps for Claude cloud and Codex cloud into the store |
 | `cloud secrets --project NAME [--vendor claude\|codex] (--check \| --out FILE [--replace])` | produce the environment's values on this machine from the recipes in env.json; never prints a value |
@@ -155,8 +158,18 @@ network step warns and carries on. `agent-mirror <command> -h` shows every optio
 ## The box
 
 Untracked project files (results, slides, figures) do not travel with a git clone. The box carries
-them. **Inbound**: developer machines upload (`box push`), each the folders it owns, and agents read
-(`box index`, `box ls`, `box fetch`). **Outbound**: agents upload results (`box send`), the developer pulls them (`box receive`).
+them, on two sides:
+
+- **Shared**: one tree of durable files. Developer machines upload it (`box push`), each the folders it
+  owns, and every machine and session reads it (`box index`, `box ls`, `box fetch`). Cloud sessions never
+  write it.
+- **Sessions**: one namespace per session. `box send` uploads into the namespace of the session it runs
+  in (with `--label` to name it). Every machine and later session lists them (`box sessions`) and fetches
+  them (`box fetch --session`), so session C can use what sessions A and B produced. A developer machine
+  copies what is worth keeping into the shared tree (`box promote`) and deletes old sessions
+  (`box prune`).
+
+The older names of the two sides, inbound and outbound, still work in the config.
 Backends: `azure-blob` (through the Azure CLI, Azure AD sign-in only) and `rclone` (OneDrive, S3,
 Google Drive and many more).
 
@@ -165,7 +178,7 @@ Retrieval is on demand, because a cloud machine has little disk: agents browse t
 `box.min_free_bytes` (default 2 GiB) free. `box status` and `box evict` manage what was fetched.
 Folders with very many small files can travel as one bundle each (`box.archives`, for example `ws-*` or
 `decompile/project*`), with large files kept out of the bundle and fetched only when named. Each archived
-folder and each include folder is owned by one machine (`<inbound>/_owners.json`), so a project split
+folder and each include folder is owned by one machine (`<shared>/_owners.json`), so a project split
 across two machines can share one box: each machine pushes its own folders and `box owners` shows who has
 what. Settings and rules: [plugin/docs/project-config.md](plugin/docs/project-config.md) and "Folder
 owners" in [plugin/docs/reconciliation.md](plugin/docs/reconciliation.md).
@@ -186,7 +199,7 @@ owners" in [plugin/docs/reconciliation.md](plugin/docs/reconciliation.md).
   skills folder is never replaced by one link; skills are linked one by one.
 - Before machine content is copied into the store (`adopt`, memory `merge`), the secret scan runs on it;
   a hit refuses that unit and names the file and pattern only. Cloud sessions never adopt.
-- Each folder of a box has one owning machine (`_owners.json` on the inbound side): `box push` claims
+- Each folder of the shared tree has one owning machine (`_owners.json` on the shared side): `box push` claims
   folders nobody owns and never uploads a folder another machine owns, unless you run
   `box push --take-over FOLDER`. A machine whose box role is `reader` or `none` never pushes. The remote has
   no locking, so every change to `_owners.json` is read back and checked, and retried or refused clearly.
@@ -201,8 +214,11 @@ owners" in [plugin/docs/reconciliation.md](plugin/docs/reconciliation.md).
 - Project config names where each secret comes from (fixed recipe types only; no command from the store is
   ever run), never the value. `cloud secrets --out` and `box rclone-env --out` write owner-only files and
   refuse paths inside the store or any git work tree.
-- The box never deletes remote files unless you pass `--delete`, never overwrites local files on a
-  local runtime, refuses `box push` and `box receive` on a cloud runtime, and refuses `.env` files.
+- The box never deletes remote files unless you pass `--delete` (shared tree) or `box prune --yes`
+  (session namespaces only), never overwrites local files on a local runtime, refuses `box push`,
+  `box promote`, `box prune` and `box receive` on a cloud runtime, and refuses `.env` files. `box send`
+  writes only into the session's own namespace. The session manifest never holds environment values or
+  absolute paths.
   `box evict` deletes only files recorded as fetched from the box and unchanged since, and only on a
   cloud runtime unless you pass `--force`. `box rclone-env` never prints a secret value.
 - `--dry-run` shows the exact commands, with secret values replaced by `***`.

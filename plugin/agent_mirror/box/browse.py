@@ -27,8 +27,8 @@ def load_index(index_path):
                 r = json.loads(line)
             except ValueError:
                 continue
-            if not isinstance(r, dict) or not r.get("path") or "writer" in r or "owners" in r:
-                continue  # an ownership line, or anything that is not an entry
+            if not isinstance(r, dict) or not r.get("path") or "writer" in r or "owners" in r or "sessions" in r:
+                continue  # an ownership line, the session summary, or anything that is not an entry
             (archives if r.get("archive") else files).append(r)
     return files, archives
 
@@ -184,7 +184,12 @@ def cmd_status(args, ctx):
     else:
         groups = {}
         for rel, entry in record.files.items():
-            g = groups.setdefault(rel.split("/")[0], {"files": 0, "bytes": 0, "here": 0, "changed": 0})
+            source = str(entry.get("source") or "")
+            if source.startswith("session:"):
+                key = "session %s" % source.split(":", 1)[1]  # evict it with its folder, _sessions/<session id>
+            else:
+                key = rel.split("/")[0]
+            g = groups.setdefault(key, {"files": 0, "bytes": 0, "here": 0, "changed": 0})
             g["files"] += 1
             g["bytes"] += int(entry.get("size") or 0)
             if os.path.lexists(os.path.join(path, *rel.split("/"))):

@@ -146,12 +146,20 @@ class PlanCasesTest(ReconcileBase):
         from helpers import TEMPLATE_STORE
 
         current = read(os.path.join(TEMPLATE_STORE, "AGENTS.md"))
-        older = current.replace(" or `agent-mirror apply`", "")  # the 0.2.x wording
-        self.assertNotEqual(older, current)
-        with open(self.s("AGENTS.md"), "wb") as fh:  # as a Windows checkout may hold it
-            fh.write(older.replace("\r\n", "\n").replace("\n", "\r\n").encode("utf-8"))
-        u = self.unit(self.plan(), "instructions:claude")
-        self.assertEqual((u["case"], u["store"]["state"]), ("first-setup", "template"))
+        sessions_lines = [ln for ln in current.splitlines(True) if "box sessions" in ln or "box promote" in ln or "--label" in ln]
+        self.assertEqual(len(sessions_lines), 3)
+        v04 = current
+        for ln in sessions_lines[:-2]:
+            v04 = v04.replace(ln, "")
+        v04 = v04.replace(sessions_lines[-2], sessions_lines[-2].split(" `agent-mirror box send")[0] + " `agent-mirror box send <path>`.\n")
+        v04 = v04.replace(sessions_lines[-1], "")  # the 0.3.0 to 0.4.0 wording
+        older = v04.replace(" or `agent-mirror apply`", "")  # the 0.2.x wording
+        self.assertNotEqual(older, v04)
+        for text in (v04, older):
+            with open(self.s("AGENTS.md"), "wb") as fh:  # as a Windows checkout may hold it
+                fh.write(text.replace("\r\n", "\n").replace("\n", "\r\n").encode("utf-8"))
+            u = self.unit(self.plan(), "instructions:claude")
+            self.assertEqual((u["case"], u["store"]["state"]), ("first-setup", "template"))
         write(self.s("AGENTS.md"), older + "- one line of my own\n")
         self.assertEqual(self.case("instructions:claude"), "reconcile")
 

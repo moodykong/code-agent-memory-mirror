@@ -173,7 +173,7 @@ class Layout:
         from agent_mirror.box.extras import mount_dir, receive_dir
         from agent_mirror.util import norm, within
 
-        found = []
+        found = ["_sessions"]  # sessions fetched with box fetch --session
         root = os.path.realpath(self.project)
         for folder in (mount_dir(self.s), receive_dir(self.s)):
             real = os.path.realpath(folder)

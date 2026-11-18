@@ -60,7 +60,7 @@ Ask as a multiple choice over the systems found in the inventory. For each selec
 - **Measure:** total size and file count of unique work; whether it is employer data; which storage the planned identity can already reach.
 - **Options:** object storage in the employer's cloud account; a consumer drive through rclone (which account); none.
 - **Default:** object storage that the cloud identity can already read with a narrow role. A consumer drive needs a sign-in token that usually opens the whole drive, and handles many small files slowly. If the user has no such storage, rclone to a drive is a fine start.
-- **Always two sides:** an inbound side that developer machines write and agents read, and an outbound side that agents write and the developer pulls. On the inbound side every folder has one owning machine; a push skips folders owned elsewhere, so several machines can contribute without an old copy overwriting newer work. Cloud sessions never write the inbound side.
+- **Always two sides:** a shared side that developer machines write and everyone reads, and a sessions side where every session writes its own namespace and everyone reads (`box sessions`, `box fetch --session`). On the shared side every folder has one owning machine; a push skips folders owned elsewhere, so several machines can contribute without an old copy overwriting newer work. Cloud sessions never write the shared side; a developer machine promotes what is worth keeping (`box promote`).
 
 ## 11. What goes into the box
 

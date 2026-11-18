@@ -227,8 +227,11 @@ def section(title):
     out("===== %s =====" % title)
 
 
-def tail_run(argv, limit, tail=12, cwd=None):
-    """Run, print the last lines of the combined output and the exit code. Never raises."""
+def tail_run(argv, limit, tail=12, cwd=None, keep=None):
+    """Run, print the last lines of the combined output and the exit code. Never raises.
+
+    keep, a list, receives the whole output.
+    """
     try:
         proc = subprocess.run(
             argv,
@@ -245,6 +248,8 @@ def tail_run(argv, limit, tail=12, cwd=None):
         text, rc = (exc.output or "") if isinstance(exc.output, str) else "", "timeout after %s s" % limit
     except OSError as exc:
         text, rc = str(exc), "could not start"
+    if keep is not None:
+        keep.append(text)
     for line in text.rstrip().splitlines()[-tail:]:
         out(line)
     out("(exit %s)" % rc)
@@ -403,6 +408,15 @@ def full_probe(args, ctx):
                     % (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), detect_runtime())
                 )
             tail_run(self_argv(ctx, "box", "send", note, *box_args), 180, tail=3)
+            from agent_mirror.box.sessions import load_local
+
+            sid = load_local(path).get("id")
+            text = []
+            tail_run(self_argv(ctx, "box", "sessions", "--limit", "3", *box_args), 120, tail=6, keep=text)
+            out(
+                "the session just written (%s) is listed: %s"
+                % (sid or "none recorded", "yes" if sid and sid in "".join(text) else "NO")
+            )
         except OSError as exc:
             out("could not write the probe note: %s" % exc)
         finally:
@@ -474,7 +488,7 @@ def small_indexed_file(index_path):
                 if i > 20000:
                     break
                 r = json.loads(line)
-                if not isinstance(r, dict) or r.get("archive") or "writer" in r or "owners" in r:
+                if not isinstance(r, dict) or r.get("archive") or "writer" in r or "owners" in r or "sessions" in r:
                     continue
                 size = r.get("size") or 0
                 if 0 < size < 20000 and str(r.get("path", "")).endswith((".md", ".txt", ".json")):

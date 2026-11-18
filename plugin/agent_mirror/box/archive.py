@@ -2,7 +2,7 @@
 
 Configured with box.archives: folder paths or globs relative to the project folder ("ws-*",
 "decompile/project-*"). Each matching folder is its own archive, named by its relative path
-(units.py decides which folders match). On the remote side, under the inbound root:
+(units.py decides which folders match). On the remote side, under the root of the shared side:
 
   _archives/<name>.tar.gz          the bundle: every file below the large-file threshold
   _archives/<name>.large/<path>    each file at or above box.archive_large_file_bytes, on its own
@@ -309,14 +309,38 @@ def load_toc(sidecar, side, timeout):
 # push ---------------------------------------------------------------------------------------
 
 
+def read_sidecars(side, names, timeout):
+    """{name: sidecar dict or None} for these archives, with as few transfer calls as the backend allows."""
+    if not names:
+        return {}
+    tmp = current().mkdtemp("agent-mirror-sidecars-")
+    try:
+        rels = [n + ".json" for n in names]
+        found, problem = side.get_present(ARCHIVE_DIR, rels, tmp, timeout)
+        if problem:
+            return dict((n, parse_json(side.cat(sidecar_rel(n), timeout))) for n in names)
+        result = {}
+        for n in names:
+            path = os.path.join(tmp, *(n + ".json").split("/"))
+            data = None
+            if n + ".json" in found:
+                with open(path, encoding="utf-8", errors="replace") as fh:
+                    data = parse_json(fh.read())
+            result[n] = data
+        return result
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def local_file(project, name, path):
     return os.path.join(project, *name.split("/"), *path.split("/"))
 
 
-def push_one(args, s, side, name, scanned=None):
+def push_one(args, s, side, name, scanned=None, remote_sidecar=False):
     """Push one archived folder. Returns {"rc", "fingerprint", "uploaded"}.
 
-    scanned is (entries, skipped) from an earlier scan of the same folder, to walk it only once.
+    scanned is (entries, skipped) from an earlier scan of the same folder, to walk it only once, and
+    remote_sidecar the sidecar already read from the box (None when there is none), to read it only once.
     """
     project = s["project_path"]
     entries, skipped = scanned if scanned is not None else scan(project, name, s["rules"])
@@ -352,7 +376,9 @@ def push_one(args, s, side, name, scanned=None):
             out("... and %d more large files" % (len(large) - 5))
         out("would run: %s" % show_cmd(side.put_cmd("<temp>/%s.json" % base, sidecar_rel(name))))
         return done
-    remote = parse_json(side.cat(sidecar_rel(name), args.timeout)) or {}
+    if remote_sidecar is False:
+        remote_sidecar = parse_json(side.cat(sidecar_rel(name), args.timeout))
+    remote = remote_sidecar or {}
     if remote.get("fingerprint") == fp_all:
         out("%s: unchanged since the last push (fingerprint %s); skipped" % (name, fp_all[:12]))
         return done
@@ -695,41 +721,41 @@ def fetch_archive(args, s, runtime, side, rel, top):
 # send --archive -----------------------------------------------------------------------------
 
 
-def send_archive(args, s, runtime, side, rel):
+def send_archive(args, s, runtime, side, rel, sid):
+    """Send a folder as one .tar.gz into the session sid. Returns (exit code, manifest facts or None)."""
     project = s["project_path"]
     src = os.path.join(project, *rel.split("/"))
     if not os.path.isdir(src):
         err("--archive takes a folder; %s is not one" % rel)
-        return 2
+        return 2, None
     entries, skipped = scan(project, rel, s["rules"])
     if not entries:
         out("nothing to upload in %s" % rel)
-        return 0
+        return 0, None
     total = sum(e["size"] for e in entries)
-    dest = "%s-%s/%s.tar.gz" % (runtime, utc_stamp(), rel)
+    dest = "%s/%s.tar.gz" % (sid, rel)
     out(
         "%s: %d files (%s) as one archive; left out %d env files, %d excluded, %d links"
         % (rel, len(entries), human(total), skipped["env"], skipped["excluded"], skipped["links"])
     )
     if args.dry_run:
         out("dry run: nothing will change")
-        out(
-            "would run: %s"
-            % show_cmd(side.put_cmd("<temp>/%s.tar.gz" % posixpath.basename(rel), dest, overwrite=False))
-        )
-        return 0
+        out("would run: %s" % show_cmd(side.put_cmd("<temp>/%s.tar.gz" % posixpath.basename(rel), dest)))
+        return 0, None
     tmp = current().mkdtemp("agent-mirror-send-")
     try:
         if not disk_guard(tmp, total, BUILD_MARGIN, getattr(args, "force", False), label="a 16 MiB margin"):
-            return 1
+            return 1, None
         path = os.path.join(tmp, posixpath.basename(rel) + ".tar.gz")
         build_bundle(project, rel, entries, path, args.transfer_timeout)
-        out("running: %s" % show_cmd(side.put_cmd(path, dest, overwrite=False)))
-        ok, detail = side.put(path, dest, args.transfer_timeout, overwrite=False)
+        out("running: %s" % show_cmd(side.put_cmd(path, dest)))
+        ok, detail = side.put(path, dest, args.transfer_timeout)
         if not ok:
             err("upload failed: %s" % detail)
-            return 1
-        out("uploaded %s (%s compressed)" % (side.where(dest), human(os.path.getsize(path))))
-        return 0
+            return 1, None
+        size = os.path.getsize(path)
+        out("uploaded %s (%s compressed)" % (side.where(dest), human(size)))
+        newest = max(e["mtime"] for e in entries)
+        return 0, {"files": len(entries), "bytes": total, "archive_bytes": size, "mtime": iso(newest)}
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

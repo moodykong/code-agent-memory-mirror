@@ -5,13 +5,13 @@
   },
   "metadata": {
     "description": "One plugin: the same instructions, skills and memory for Claude Code and Codex on every machine and in cloud sessions.",
-    "version": "0.4.0"
+    "version": "0.5.0"
   },
   "plugins": [
     {
       "name": "code-agent-memory-mirror",
       "description": "Mirror a git store you own (instructions, skills, agent memory, project settings) into Claude Code and Codex, locally and in cloud sessions.",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "author": {
         "name": "moodykong"
       },

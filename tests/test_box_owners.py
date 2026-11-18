@@ -10,10 +10,11 @@ by the FAKE_HOOKS rule of the fake tools.
 import json
 import os
 import shutil
+import tempfile
 import unittest
 
 from helpers import setUpModule  # noqa: F401 (the sandbox guard runs first)
-from helpers import FAKE_RCLONE, ToolTest, install_fake, read, write
+from helpers import FAKE_RCLONE, ToolTest, install_fake, read, remove_tree, write
 
 from agent_mirror.box.archive import entry_problem, sidecar_name
 from agent_mirror.box.units import TOP, archive_unit_of, archive_units, folder_units, unit_of_file
@@ -219,9 +220,13 @@ class OwnersMixin:
             self.assertEqual(self.transfer_calls(), [])
             self.assertIsNone(self.owners())
 
-    def test_old_single_writer_marker(self):
+    def pushed_by_a(self):
+        """The box after machine A's first push (the same in every test of a class)."""
         rc, out = self.push_a()
         self.assertEqual(rc, 0, out)
+
+    def test_old_single_writer_marker(self):
+        self.pushed_by_a()
         # make it a box written by an older version: only the single-writer marker
         os.remove(self.stored("_owners.json"))
         marker = {"machine_id": ID_A, "machine_name": "desk-a", "date": "2026-11-01T09:00:00", "tool": "agent-mirror 0.3.1"}
@@ -250,7 +255,7 @@ class OwnersMixin:
         self.assertTrue(os.path.isfile(self.stored("_writer.json")))
 
     def test_old_writer_converts_on_its_next_push_and_bare_take_over(self):
-        rc, out = self.push_a()
+        self.pushed_by_a()
         os.remove(self.stored("_owners.json"))
         marker = {"machine_id": ID_A, "machine_name": "desk-a", "date": "2026-11-01T09:00:00", "tool": "agent-mirror 0.3.1"}
         write(self.stored("_writer.json"), json.dumps(marker))
@@ -482,7 +487,7 @@ class RcloneFakeOwnersTest(ConcurrencyMixin, OwnersMixin, ToolTest):
         if not os.path.isfile(self.log):
             return []
         calls = [json.loads(x)["argv"] for x in read(self.log).splitlines()]
-        return [c for c in calls if c[0] in ("copy", "sync") or (c[0] == "copyto" and not c[1].startswith(self.INBOUND))]
+        return [c for c in calls if c[0] in ("copy", "sync", "copyto") and not c[1].startswith(self.INBOUND)]
 
     def test_filters_carry_only_folders_this_machine_pushes(self):
         write(os.path.join(self.b, "temporary", "t.txt"), "b\n")
@@ -514,7 +519,32 @@ class RcloneFakeOwnersTest(ConcurrencyMixin, OwnersMixin, ToolTest):
 
 @unittest.skipUnless(shutil.which("rclone"), "rclone is not installed")
 class RcloneRealOwnersTest(OwnersMixin, ToolTest):
-    """Real rclone, local folders as remotes. No concurrency cases: they need the fake's write hook."""
+    """Real rclone, local folders as remotes. No concurrency cases: they need the fake's write hook.
+
+    Every real rclone start costs most of a second, so the box after A's first push (the same in every
+    test; test_two_machines_each_own_their_folders checks that push itself) is made once per class and
+    copied into the tests that start from it.
+    """
+
+    snapshot = None
+
+    @classmethod
+    def tearDownClass(cls):
+        if cls.snapshot:
+            remove_tree(os.path.dirname(cls.snapshot))
+        super().tearDownClass()
+
+    def pushed_by_a(self):
+        cls = type(self)
+        if cls.snapshot:
+            remove_tree(self.inbound)
+            shutil.copytree(cls.snapshot, self.inbound)
+            self.as_machine("desk-a", ID_A)
+            return
+        super().pushed_by_a()
+        holder = tempfile.mkdtemp(prefix="agent-mirror-snapshot-")
+        shutil.copytree(self.inbound, os.path.join(holder, "inbound"))
+        cls.snapshot = os.path.join(holder, "inbound")
 
     def configure_box(self):
         self.inbound = os.path.join(self.base, "remote", "in")
@@ -559,10 +589,6 @@ class RcloneRealOwnersTest(OwnersMixin, ToolTest):
 
 class UnitRulesTest(unittest.TestCase):
     def test_archive_entries_and_overlaps(self):
-        import tempfile
-
-        from helpers import remove_tree
-
         base = os.path.realpath(tempfile.mkdtemp(prefix="agent-mirror-units-"))
         self.addCleanup(remove_tree, base)
         for rel in ("decompile/proj-a/x", "decompile/proj-b/x", "decompile/binaries-1/x", "ws-1/x", "_archives/x", "other/x"):
