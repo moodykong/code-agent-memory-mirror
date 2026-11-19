@@ -179,7 +179,8 @@ UNVERIFIED (macOS): that Claude Code uses the resolved path (for example
 
 ## Hooks
 
-`hooks install` writes three hooks into `<claude home>/settings.json`, each with an absolute path to
+`hooks install` writes three hooks into `<claude home>/settings.json` (four on a cloud runtime: also the
+Stop hook, `hook stop-check`, which Linux cloud machines run), each with an absolute path to
 the launcher for the current OS:
 
 - Linux and macOS: `'/path/to/plugin/bin/agent-mirror' session-start` (shell quoting).
@@ -188,6 +189,8 @@ the launcher for the current OS:
 UNVERIFIED (Windows): which shell Claude Code uses for hook commands on native Windows (it is
 documented to need Git for Windows, so probably Git Bash), and that the quoted forward-slash path to a
 `.cmd` file runs from it. UNVERIFIED (all platforms): the `async` key on the PostToolUse hook.
+UNVERIFIED (Claude Code on the web): that it runs a user-level Stop hook, and that a hook added to the
+settings during a running session is used in that session (see project-config.md, "Unsent files").
 
 ## Scheduler (`timer`)
 

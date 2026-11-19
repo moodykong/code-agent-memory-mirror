@@ -13,7 +13,9 @@ The manifest names the session (label, runtime, machine, project, repo, git bran
 send, times, tool) and lists its files. It is updated after each successful send the way _owners.json is:
 read, merge, write, read back, try again. It never holds environment values or absolute paths. Since 0.5.3
 it may hold notes (notes.py): `note`, the latest note given with `box send --note`, and `notes`, one
-{"at", "note", "paths"} entry per note; both are optional, so older readers ignore them.
+{"at", "note", "paths"} entry per note; both are optional, so older readers ignore them. Since 0.5.6 it may
+hold `skipped`, one {"at", "reason", "paths"} entry per `box skip` (unsent.py): what the session left behind
+on purpose, and why.
 
 Cloud sessions never write the shared tree. A developer machine copies what is worth keeping into it with
 `box promote`, through its own copy of the folder and the normal ownership of box push, and removes old
@@ -51,6 +53,10 @@ LIST_LIMIT = 20
 READ_CAP = 500
 INDEX_CAP = 50
 FETCH_DIR = "_sessions"
+SENT_CAP = 100000  # files remembered as sent in one session's local record
+# what the session summary of the box index keeps of each session
+INDEX_KEYS = ("id", "label", "runtime", "branch", "commit", "updated", "files", "bytes", "note")
+INDEX_KEYS += ("skipped", "skip_reason")  # since 0.5.6
 TOOL_FOR_BACKEND = {"azure-blob": "az", "rclone": "rclone"}
 _RUNTIMES = "|".join(re.escape(r) for r in RUNTIMES)
 ID_RX = re.compile(r"^(%s)-(\d{8}T\d{6}Z)-([0-9a-f]{6})$" % _RUNTIMES)
@@ -121,21 +127,31 @@ def save_local(project, data):
     ensure_git_exclude(project, os.path.join(project, STATE_DIR))
 
 
+def same_session(rec, runtime, host=None, key="started", now=None):
+    """True when a local record of this clone (session.json, baseline.json) belongs to the session that runs now:
+    the same runtime and, on a cloud runtime, the same machine (a new cloud machine is a new session); on a
+    developer runtime, a record whose `key` time is at most DEV_HOURS old."""
+    if not isinstance(rec, dict) or rec.get("runtime") != runtime:
+        return False
+    if runtime in CLOUD_RUNTIMES:
+        return rec.get("host") == (host or socket.gethostname())
+    started = parse_utc(rec.get(key))
+    if started is None:
+        return False
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    return now - started <= datetime.timedelta(hours=DEV_HOURS)
+
+
 def current_session(project, runtime, new=False, label=None, dry_run=False):
     """(this session {"id", "label", "runtime", "started", ...}, True when it starts now).
 
-    Nothing is saved in a dry run.
+    Nothing is saved in a dry run. The record may also hold what this session sent (`sent`, record_sent) and
+    the paths it declared disposable (`skipped`, `box skip`); a new session starts without them.
     """
     rec = load_local(project)
     host = socket.gethostname()
-    reuse = bool(rec.get("id")) and looks_like_session(rec.get("id")) and rec.get("runtime") == runtime and not new
-    if reuse and runtime in CLOUD_RUNTIMES and rec.get("host") != host:
-        reuse = False  # a new cloud machine is a new session
-    if reuse and runtime not in CLOUD_RUNTIMES:
-        started = parse_utc(rec.get("started"))
-        age = datetime.datetime.now(datetime.timezone.utc) - started if started else None
-        if age is None or age > datetime.timedelta(hours=DEV_HOURS):
-            reuse = False
+    reuse = bool(rec.get("id")) and looks_like_session(rec.get("id")) and not new
+    reuse = reuse and same_session(rec, runtime, host)
     if reuse:
         if label and not rec.get("label"):
             rec["label"] = label
@@ -160,6 +176,33 @@ def current_session(project, runtime, new=False, label=None, dry_run=False):
     if not dry_run:
         save_local(project, rec)
     return rec, True
+
+
+def record_sent(project, rel, rules):
+    """Remember in the local session record what one send uploaded: {path: {"bytes", "mtime"}} per file, so that
+    `box unsent` leaves out files sent in this session and unchanged since. Never raises."""
+    try:
+        src = os.path.join(project, *rel.split("/"))
+        if os.path.isdir(src):
+            keep, _ = folder_files(src, rel, rules)
+            paths = [rel + "/" + sub for sub in keep]
+        else:
+            paths = [rel]
+        rec = load_local(project)
+        sent = rec.get("sent") if isinstance(rec.get("sent"), dict) else {}
+        for p in paths:
+            try:
+                st = os.stat(os.path.join(project, *p.split("/")))
+            except OSError:
+                continue
+            sent.pop(p, None)
+            sent[p] = {"bytes": st.st_size, "mtime": st.st_mtime}
+        if len(sent) > SENT_CAP:
+            sent = dict(list(sent.items())[-SENT_CAP:])  # the newest; older files may be listed again
+        rec["sent"] = sent
+        save_local(project, rec)
+    except (OSError, ValueError):
+        pass
 
 
 # the manifest -----------------------------------------------------------------------------------
@@ -232,12 +275,13 @@ def put_json(side, rel, data, timeout):
 
 
 def update_manifest(
-    side, sid, base, timeout, files=(), promoted=None, label=None, new=False, note=None, note_paths=()
+    side, sid, base, timeout, files=(), promoted=None, label=None, new=False, note=None, note_paths=(), skipped=None
 ):
     """Read, merge, write and read back the manifest. Returns (ok, problem or None, the manifest).
 
     new: the session started in this command, so its namespace has no manifest yet (the first read is skipped).
     note: this send's note, recorded on note_paths (the sent paths); merged into what the manifest holds now.
+    skipped: one {"at", "reason", "paths"} entry of `box skip`, added to the manifest's `skipped` list.
     """
     doc = None
     for attempt in range(TRIES):
@@ -255,6 +299,7 @@ def update_manifest(
         if promoted:
             doc["promoted"] = list(doc.get("promoted") or []) + [promoted]
         notes.add_note(doc, note, note_paths, doc["updated"])
+        notes.add_skip(doc, skipped)
         ok, detail = put_json(side, "%s/%s" % (sid, MANIFEST), doc, timeout)
         if not ok:
             return False, "cannot write %s: %s" % (scrub(side.where("%s/%s" % (sid, MANIFEST))), detail), doc
@@ -375,6 +420,8 @@ def summary_of(view, sid):
                 m["note"] if isinstance(m.get("note"), str) and m["note"].strip() else (said[-1][2] if said else None)
             ),
             "notes": len(said),
+            "skipped": sum(len(paths) for _, _, paths in notes.manifest_skips(m)),
+            "skip_reason": (notes.manifest_skips(m) or [(None, None, None)])[-1][1],
         }
     listed = view.files(sid)
     stamps = sorted(str(f.get("modtime") or "") for f in listed if f.get("modtime"))
@@ -394,6 +441,8 @@ def summary_of(view, sid):
         "manifest": False,
         "note": None,
         "notes": 0,
+        "skipped": 0,
+        "skip_reason": None,
     }
 
 
@@ -475,6 +524,8 @@ def cmd_sessions(args, s, runtime):
                     "      (%d notes in this session; `agent-mirror box fetch --session %s --dry-run` prints them all)"
                     % (int(r["notes"]), r["id"])
                 )
+        if int(r.get("skipped") or 0):
+            out("      %s" % notes.skipped_summary(r["skipped"], r.get("skip_reason")))
     if total > len(rows):
         out("(%d more; show them with --limit %d)" % (total - len(rows), total))
     if others:
@@ -606,6 +657,8 @@ def cmd_fetch(args, s, runtime):
     files, archives, manifest = session_files(view, sid, listed)
     plain, parts = select(files, archives, rel)
     if not plain and not parts:
+        for line in notes.skip_lines(manifest):  # a session may hold only what it left behind, and why
+            out(line)
         err("nothing at %s in the session %s" % (rel or "the top", sid))
         return 1
     dest = into_dir(s, args, sid)
@@ -625,7 +678,7 @@ def cmd_fetch(args, s, runtime):
             dest,
         )
     )
-    for line in notes.note_lines(manifest):
+    for line in notes.note_lines(manifest) + notes.skip_lines(manifest):
         out(line)
     if args.dry_run:
         out("would download them from %s (%s; %s)" % (scrub(side.where(sid)), human(need), "overwriting local files" if cloud else "never overwriting existing local files"))
@@ -960,12 +1013,7 @@ def index_line(s, timeout):
     rows = []
     for n in names[:INDEX_CAP]:
         r = summary_of(view, n)
-        rows.append(
-            dict(
-                (k, r.get(k))
-                for k in ("id", "label", "runtime", "branch", "commit", "updated", "files", "bytes", "note")
-            )
-        )
+        rows.append(dict((k, r.get(k)) for k in INDEX_KEYS))
     return {"path": "_sessions", "sessions": rows, "more": max(0, len(names) - INDEX_CAP)}
 
 

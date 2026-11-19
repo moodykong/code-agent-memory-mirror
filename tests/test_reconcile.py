@@ -40,6 +40,13 @@ OLD_SEND_LINE = (
     "`agent-mirror box send <path> --label <short-name>`; every send of this session goes into the same session, "
     "and later sessions can list and fetch it.\n"
 )
+# the send line of the template of 0.5.3 to 0.5.5, before `box unsent` and `box skip` (0.5.6)
+SEND_LINE_055 = (
+    "- The machine is thrown away after the session. Before finishing, upload anything worth keeping with "
+    '`agent-mirror box send <path> --label <short-name> --note "<what these files are, why they were made, what to '
+    'do next>"`; a send without a note is refused, every send of this session goes into the same session, and later '
+    "sessions can list and fetch it.\n"
+)
 
 
 class ReconcileBase(ToolTest):
@@ -159,7 +166,18 @@ class PlanCasesTest(ReconcileBase):
     def test_an_older_release_template_counts_as_no_record(self):
         from helpers import TEMPLATE_STORE
 
-        current = read(os.path.join(TEMPLATE_STORE, "AGENTS.md"))
+        newest = read(os.path.join(TEMPLATE_STORE, "AGENTS.md"))
+        # the template of 0.5.3 to 0.5.5: one send line where 0.5.6 has the `box unsent` line and the keep/leave line
+        unsent_lines = [ln for ln in newest.splitlines(True) if "box unsent" in ln or ln.startswith("- What to keep")]
+        self.assertEqual(len(unsent_lines), 2)
+        current = newest.replace(unsent_lines[0], SEND_LINE_055).replace(unsent_lines[1], "")
+        self.assertEqual(
+            hashlib.sha256(current.replace("\r\n", "\n").encode("utf-8")).hexdigest(),
+            "10a591eab19e8b47a50eb61bf0209ee78afc986354cb141bfcc0e22af7d351e6",
+        )
+        write(self.s("AGENTS.md"), current)
+        u = self.unit(self.plan(), "instructions:claude")
+        self.assertEqual((u["case"], u["store"]["state"]), ("first-setup", "template"))
         sessions_lines = [ln for ln in current.splitlines(True) if "box sessions" in ln or "box promote" in ln or "--label" in ln]
         self.assertEqual(len(sessions_lines), 3)
         v04 = current

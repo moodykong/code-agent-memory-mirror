@@ -150,6 +150,7 @@ Written on the cloud machine, never in the store:
 | `~/agent_setup_probe.txt` | the setup script's notes: each step's name, result and time, never output |
 | `<config>/bootstrap-stamp.json` | what `cloud bootstrap` set up: per project a hash of `python`, `setup_commands` and `companion_repos`, the agent-mirror commit, the store commit |
 | `<cache>/session-start.jsonl` | one JSON line per `session-start` run (the newest 50): each step's name, start, end, seconds and status, never output; `probe` prints the last one |
+| `<cache>/stop-check.json` | the stop check's memory for the current session (since 0.5.6): the `session_id`, how often it blocked, short digests of the files it last blocked on (never names) and its last outcome |
 
 `<config>` and `<cache>` are agent-mirror's folders (`~/.config/agent-mirror` and `~/.cache/agent-mirror`
 on Linux; `agent-mirror debug paths` prints them). Developer machines write `session-start.jsonl` too.
@@ -225,7 +226,7 @@ hold the folder's note (`note`, `note_updated`, since 0.5.3; `box note` writes i
 older version may also have its single-writer marker: `{"path": "_writer.json", "writer": {"machine_id",
 "machine_name", "date", "tool"}}`. When the sessions side holds sessions, one more line summarizes the
 newest sessions: `{"path": "_sessions", "sessions": [{"id", "label", "runtime", "branch", "commit", "updated",
-"files", "bytes", "note"}], "more": N}` (the newest 50; `note` since 0.5.3). Readers of the entries skip these lines; `plan`, `box ls`, `box owners`
+"files", "bytes", "note", "skipped", "skip_reason"}], "more": N}` (the newest 50; `note` since 0.5.3; `skipped`, the count of paths the session left behind with `box skip`, and `skip_reason`, the latest reason, since 0.5.6). Readers of the entries skip these lines; `plan`, `box ls`, `box owners`
 and `box sessions` (without the transfer program) use them. Commit the index and `box_toc/` so `agent-mirror box ls` and `agent-mirror plan`
 work offline on other machines.
 
@@ -236,7 +237,21 @@ work offline on other machines.
 label, runtime, host and start time). agent-mirror adds `/.agent-mirror/` to the clone's
 `.git/info/exclude`, never to the tracked `.gitignore`. Fetched sessions (`_sessions/`), `box receive`
 (default `_agent_outbound/`) and `box mount` (default `_box/`) folders inside the project are added there
-too.
+too. Since 0.5.6, all optional, and read only by the machine that wrote them:
+
+| File | What |
+| --- | --- |
+| `.agent-mirror/baseline.json` | the session baseline `session-start` records for a clone with a box: `{"schema", "seconds", "at", "runtime", "host", "tool"}`; `box unsent` counts files changed since then |
+| `.agent-mirror/session.json`, key `sent` | `{path: {"bytes", "mtime"}}` of every file `box send` uploaded in this session (the newest 100000) |
+| `.agent-mirror/session.json`, key `skipped` | `[{"at", "reason", "paths"}]`, one entry per `box skip` in this session |
+| `.agent-mirror/pushed.json` | `{"version": 1, "folders": {folder: {"fingerprint", "at", "machine_id"}}}`: what this machine's last `box push` uploaded of each folder; `box release` removes a folder; a developer `session-start` compares the folders with it |
+
+A new session starts a new `session.json` without `sent` and `skipped`; older versions keep those keys when
+they rewrite the record.
+
+The session manifest on the box (`<sessions>/<session id>/_session.json`) may also hold, since 0.5.6, the
+optional `skipped` list: `{"at", "reason", "paths"}` per `box skip` (the newest 20 entries, at most 50 paths
+each, with `"more": N` for the others). Older readers ignore it, and keep it when they rewrite the manifest.
 
 ## What `sync` commits
 

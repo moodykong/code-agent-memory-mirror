@@ -10,6 +10,10 @@ Notes (notes.py): `box send --note` records what the files are in the session ma
 runtime), `box note FOLDER TEXT` records a shared folder's note in its _owners.json entry, and a cloud
 session start prints the newest sessions with their notes.
 
+Unsent files (unsent.py): `box unsent` lists what this session made in the clone that is in no git commit and
+not in the box, `box skip PATH --reason TEXT` declares files disposable, and a Stop hook on a cloud machine
+asks the agent to do one or the other before the session ends.
+
 Backends: azure-blob (Azure CLI), rclone, or none. The older names of the two sides were inbound and
 outbound; the config keys with those names still work.
 """
@@ -23,6 +27,7 @@ from agent_mirror.box.common import box_context, old_side_keys, side_setting
 from agent_mirror.box.rules import azure_rule_problems, clean_rel, generic_rule_problems, is_env_file
 from agent_mirror.box.sides import side_for
 from agent_mirror.box.units import archive_unit_of, archive_units
+from agent_mirror.box.unsent import ignore_patterns as unsent_ignore_patterns
 from agent_mirror.runtime import CLOUD_RUNTIMES, detect_runtime
 from agent_mirror.util import err, local_path, out, within
 
@@ -41,6 +46,10 @@ def cmd_box(args, ctx):
         from agent_mirror.box.candidates import cmd_candidates
 
         return cmd_candidates(args, ctx)
+    if action in ("unsent", "skip"):
+        from agent_mirror.box import unsent
+
+        return unsent.cmd_unsent(args, ctx) if action == "unsent" else unsent.cmd_skip(args, ctx)
     rel = None
     runtime = detect_runtime()
     by_session = action == "fetch" and getattr(args, "session", None)
@@ -261,6 +270,8 @@ def send(args, s, runtime, backend, rel, root=None):
     if args.dry_run:
         out("would record the sent files in %s" % side.where("%s/%s" % (sid, sessions.MANIFEST)))
         return 0
+    if not root:
+        sessions.record_sent(s["project_path"], rel, s["rules"])  # local: `box unsent` leaves them out
     entries = sessions.sent_entries(source, rel, info)
     if not entries:
         return 0
@@ -332,6 +343,9 @@ def describe_box(env, paths=()):
         return ["unknown backend %r" % backend], ["box.backend must be azure-blob, rclone or none"], []
     lines.append("include  %s" % ", ".join(box.get("include") or []))
     lines.append("exclude  %s" % ", ".join(box.get("exclude") or []))
+    if box.get("unsent_ignore") is not None:
+        good, _ = unsent_ignore_patterns(box)
+        lines.append("unsent_ignore %s (left out of `box unsent`)" % (", ".join(good) or "none usable"))
     if box.get("archives"):
         lines.append("archives %s (one bundle per matching folder; large files on their own)" % ", ".join(box.get("archives")))
     old = old_side_keys(box, backend)
@@ -341,7 +355,7 @@ def describe_box(env, paths=()):
             % (", ".join(old), ", ".join(k.replace("inbound", "shared").replace("outbound", "sessions") for k in old))
         )
     problems = problems + archive.archive_problems(box)
-    warnings = []
+    warnings = list(unsent_ignore_patterns(box)[1])
     if not problems:
         globs = [str(g).strip().strip("/") for g in box.get("archives") or []]
         for path in paths:

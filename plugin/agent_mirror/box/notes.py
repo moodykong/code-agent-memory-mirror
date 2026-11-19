@@ -11,6 +11,8 @@ records that already exist, never in a new file or a git record:
   committed index, where `box ls` and `box owners` read it offline.
 - a cloud `session-start` prints, per project, the newest sessions with their notes and the shared
   folders that have notes (start_block): one listing and one batched manifest read, as `box sessions`.
+- a session's `skipped` list (since 0.5.6; `box skip PATH... --reason TEXT`, unsent.py) says which paths it
+  left behind on purpose and why; the reason follows the text rules of a note.
 
 A note is one line: control characters are dropped, whitespace is collapsed, at most NOTE_MAX characters,
 and text that looks like a secret is refused (the pattern names are printed, never the text).
@@ -53,8 +55,10 @@ def secret_hits(text):
     return hits
 
 
-def clean_note(text):
-    """(note or None, problem or None). One line: control characters dropped, whitespace collapsed."""
+def clean_note(text, what="note"):
+    """(note or None, problem or None). One line: control characters dropped, whitespace collapsed.
+
+    what names the text in the messages ("note", or "reason" for `box skip`)."""
     if text is None:
         return None, None
     kept = "".join(c if (c.isprintable() or c.isspace()) else " " for c in str(text))
@@ -63,14 +67,14 @@ def clean_note(text):
         return None, None
     if len(note) > NOTE_MAX:
         return None, (
-            "a note is at most %d characters (this one has %d once spaces are collapsed); keep it to one to "
-            "three sentences" % (NOTE_MAX, len(note))
+            "a %s is at most %d characters (this one has %d once spaces are collapsed); keep it to one to "
+            "three sentences" % (what, NOTE_MAX, len(note))
         )
     hits = secret_hits(note)
     if hits:
         return None, (
-            "refusing the note: it looks like it holds a secret (%s); nothing was changed. Describe the files "
-            "without keys, tokens or passwords" % ", ".join(hits)
+            "refusing the %s: it looks like it holds a secret (%s); nothing was changed. Describe the files "
+            "without keys, tokens or passwords" % (what, ", ".join(hits))
         )
     return note, None
 
@@ -109,6 +113,45 @@ def add_note(doc, note, paths, at):
     else:
         notes.append({"at": at, "note": note, "paths": list(paths)[-PATHS_CAP:]})
     doc["notes"] = notes[-NOTES_CAP:]
+
+
+def add_skip(doc, entry):
+    """Record one `box skip` in a manifest dict: its optional `skipped` list of {"at", "reason", "paths"} (the
+    newest NOTES_CAP entries, each with at most PATHS_CAP paths and the count of the others in `more`)."""
+    if not entry or not entry.get("reason"):
+        return
+    paths = [p for p in entry.get("paths") or [] if isinstance(p, str)]
+    kept = {"at": entry.get("at"), "reason": entry["reason"], "paths": paths[:PATHS_CAP]}
+    if len(paths) > PATHS_CAP:
+        kept["more"] = len(paths) - PATHS_CAP
+    found = [e for e in doc.get("skipped") or [] if isinstance(e, dict) and e.get("reason")]
+    doc["skipped"] = (found + [kept])[-NOTES_CAP:]
+
+
+def manifest_skips(manifest):
+    """[(at, reason, paths)] of a manifest's `skipped` list, oldest first (paths counts the ones left out too)."""
+    found = []
+    for e in (manifest or {}).get("skipped") or []:
+        if isinstance(e, dict) and isinstance(e.get("reason"), str) and e["reason"].strip():
+            paths = [p for p in e.get("paths") or [] if isinstance(p, str)]
+            more = e.get("more") if isinstance(e.get("more"), int) and e.get("more") > 0 else 0
+            found.append((e.get("at"), e["reason"], paths + ["..."] * more))
+    return found
+
+
+def skipped_summary(count, reason):
+    """The short line `box sessions` prints under a session that left paths behind."""
+    return "(%d path%s left behind: %s)" % (count, "" if count == 1 else "s", shown(reason, 120))
+
+
+def skip_lines(manifest):
+    """Lines that show what a session declared disposable, for box fetch --session (none when nothing)."""
+    lines = []
+    for at, reason, paths in manifest_skips(manifest):
+        named = [p for p in paths if p != "..."]
+        where = ", ".join(named[:3]) + (" and %d more" % (len(paths) - 3) if len(paths) > 3 else "")
+        lines.append("left behind (%s): %s; reason: %s" % (at or "?", where or "?", shown(reason, 300)))
+    return lines
 
 
 def manifest_notes(manifest):

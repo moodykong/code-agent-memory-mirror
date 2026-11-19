@@ -68,12 +68,13 @@ class StepLogTest(ToolTest):
         self.assertIn("last session-start: ", out)
         self.assertRegex(out, r"session start command 2 of 2 \(demo\) +[0-9.]+ s  failed \(exit 3\)")
         self.assertNotIn(OUTPUT_MARKER, out)
-        # a developer runtime records its one step and prints no timing line
+        # a developer runtime records its steps and prints no timing line: the store pull and (0.5.6) the offline
+        # check of the box folders this machine owns, one per project with a box
         rc, out = self.run_tool("session-start", *here, env={"CLAUDECODE": "1"})
         self.assertEqual(rc, 0, out)
         self.assertNotIn("timing:", out)
         rec, _ = last_record(self.home)
-        self.assertEqual([s["name"] for s in rec["steps"]], ["store pull"])
+        self.assertEqual([s["name"] for s in rec["steps"]], ["store pull", "box push check (demo)"])
 
     def test_probe_without_a_record(self):
         rc, out = self.run_tool("probe", env={"AGENT_RUNTIME": "claude-cloud"})
@@ -190,6 +191,13 @@ class RenderTest(ToolTest):
         rc, out = self.run_tool("cloud", "render", "--project", "demo")
         self.assertEqual(rc, 0, out)
         self.assertNotIn("has no `box send --note`", out)
+        self.assertIn(
+            "store.json pins agent-mirror v0.5.3, which has no `box unsent`, `box skip` or the Stop hook", out
+        )
+        write(self.s("store.json"), json.dumps({"schema": 1, "tool": {"repo": TOOL_URL, "ref": "v0.5.6"}}))
+        rc, out = self.run_tool("cloud", "render", "--project", "demo")
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("has no `box unsent`", out)
 
     def test_runbook_prompt_writes_the_report_inside_the_clone(self):
         self.render()
@@ -363,6 +371,27 @@ class CloudMachineSimulationTest(ToolTest):
         self.assertEqual(self.stamp(home)["projects"], stamp["projects"])
         rec, _ = last_record(home)
         self.assertEqual(steps_of(rec)["setup drift check"], "ok")
+
+    def test_a_machine_built_before_the_stop_hook_gets_it_at_session_start(self):
+        """A snapshot built by 0.5.5 has three hooks; the stamp is unchanged, and the session start adds the fourth."""
+        home = self.bootstrapped()
+        path = os.path.join(home, ".claude", "settings.json")
+        settings = json.loads(read(path))
+        self.assertIn("hook stop-check", json.dumps(settings["hooks"]["Stop"]))  # bootstrap installs all four
+        del settings["hooks"]["Stop"]
+        write(path, json.dumps(settings, indent=2))
+        stamp = self.stamp(home)
+        rc, out = self.session_start(home)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("hooks: added Stop (agent-mirror hook stop-check) to ", out)
+        self.assertIn("hook stop-check", json.dumps(json.loads(read(path))["hooks"]["Stop"]))
+        self.assertEqual(steps_of(last_record(home)[0])["hooks check"], "ok (added 1)")
+        self.assertEqual(self.stamp(home)["projects"], stamp["projects"])  # no setup step ran again for it
+        self.assertEqual(len(self.markers(home)), 1)
+        rc, out = self.session_start(home)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(steps_of(last_record(home)[0])["hooks check"], "ok")
+        self.assertNotIn("hooks: added", out)
 
     def test_changed_setup_commands_run_again_at_the_next_session_start(self):
         home = self.bootstrapped()

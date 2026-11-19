@@ -1,5 +1,62 @@
 # Changelog
 
+## 0.5.6
+
+Files a cloud session made are no longer lost by being forgotten: the program detects them, the agent judges
+each one, and a hook makes sure the judging happens.
+
+- **`box unsent [--json] [--check] [--time-limit 5]`.** Lists the files of the project clone that are untracked
+  or ignored by git, changed at or after the session baseline, and persisted nowhere: not fetched from the box
+  unchanged, not sent in this session unchanged, not declared disposable. Left out by name or rule: env files,
+  links, the folders `.git`, `.agent-mirror`, `__pycache__`, `.venv`, `venv`, `node_modules`, `.cache`,
+  `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.tox` and `.nox` at any depth (not `dist` or `build`, which
+  some projects use for results), nested git clones, the box's mount and receive folders, `box.exclude` and
+  the new optional `box.unsent_ignore` patterns. Grouped by top-level folder, largest first, a folder that
+  holds only new files on one line, at most 30 lines. Offline and read-only (one `git status` without the
+  index lock), within a time limit. Exit 0; `--check` exits 3 when something is unsent or the check could not
+  finish.
+- **The session baseline.** `session-start` records, for each project clone that has a box, the time its
+  setup work finished, in `<clone>/.agent-mirror/baseline.json`, and keeps it for the same session (on a
+  cloud runtime the same machine, on a developer runtime 24 hours, as `box send` decides its session).
+  Without one, `box unsent` says so and counts from the time the clone was made (the first entry of git's
+  HEAD log).
+- **`box send` remembers what it sent** in the local session record (`sent`: size and modification time per
+  file), so those files leave the list until they change.
+- **`box skip PATH... --reason TEXT`.** Declares files or folders of the clone disposable for this session:
+  recorded locally and in the session manifest as the new optional `skipped` list (`{"at", "reason",
+  "paths"}`, the newest 20, the reason under the note rules). `box sessions` prints `(N paths left behind:
+  reason)`, `box fetch --session` prints what was left behind and why, and the index summary carries the
+  count. When the box cannot be reached it records locally and says so; a path outside the clone is refused.
+- **The stop check (Claude Code, cloud runtimes only).** `hooks install` adds a fourth hook on a cloud runtime,
+  `Stop: agent-mirror hook stop-check` (developer machines never get it, and install removes a stray one
+  there; `hooks status` and `doctor` count 3 or 4 by runtime). When the agent ends its turn with unsent files,
+  the hook prints `{"decision": "block", "reason": ...}`: the list, the `box send` and `box skip` commands and
+  the keep or leave criteria. Never twice for the same set (short digests in `<cache>/stop-check.json`; again
+  only when the set gained a file, which also covers `stop_hook_active`), at most 3 times a session, never on
+  an error, on unreadable input or when its check runs out of time (8 s, a hard stop 12 s later). Silent
+  anywhere but a cloud runtime. Codex has no stop hook: its instructions say to run `box unsent`.
+- **Old cloud machines get the hook.** A Claude cloud session start checks Claude's settings and adds the
+  agent-mirror hooks the machine lacks when some are there (step `hooks check`). A hook added during a
+  session may only be used from a later session, and a cached machine starts each session without it: raise
+  the `# revision:` line of the pasted setup script once (and pin 0.5.6 or later; `cloud render` now warns
+  about an older pin). Old pasted scripts and snapshots keep working.
+- **Keep or leave criteria.** The template `AGENTS.md`, the README and the docs carry the rule: KEEP results
+  that took real time or money to produce, analysis outputs, generated reports and figures, anything a later
+  session would otherwise have to redo; LEAVE caches, anything rebuildable in minutes, files already in git,
+  secrets and env files. A store still holding the template of 0.5.3 to 0.5.5 is still recognised as the
+  template by `plan`.
+- **Developer machines: owned folders changed since the last push.** `session-start` prints one line per
+  project, `box of demo: 2 owned folders changed since the last push (results, ws-a); upload them with:
+  agent-mirror box push --project demo`, and nothing when nothing changed or nothing is owned here. Offline:
+  `box push` now records what it uploaded of each folder in `<clone>/.agent-mirror/pushed.json` (`box release`
+  clears it), and the owners line of the committed index counts too, whichever is newer. Bounded by
+  `--push-check-timeout` (default 5 s, 0 skips it), recorded in the step log as `box push check (<project>)`;
+  the rest of a developer session start's output is unchanged.
+
+Compatibility: every new key is optional (`skipped` in the manifest, `sent` and `skipped` in the local
+session record, `box.unsent_ignore`), so 0.5.2 to 0.5.5 read what 0.5.6 writes and the reverse. The transfer
+calls of the existing box commands are unchanged.
+
 ## 0.5.5
 
 - `doctor` on a cloud machine checks the links of that machine's own agent only. A Claude cloud machine is

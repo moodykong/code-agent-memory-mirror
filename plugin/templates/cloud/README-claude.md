@@ -27,7 +27,9 @@ settings never means pasting it again.
 @@PYTHON_LINE@@
 @@SETUP_LINE@@
   - runs `agent-mirror init-store --adopt` (writes the user config), `install --agents claude` and
-    `hooks install` (session start, memory write and session end hooks in `~/.claude/settings.json`);
+    `hooks install` (session start, memory write and session end hooks in `~/.claude/settings.json`, and,
+    with agent-mirror 0.5.6 or later, the Stop hook that asks the session to send or leave behind the files
+    `agent-mirror box unsent` lists before it ends);
   - records a stamp of those setup inputs and the agent-mirror commit on the machine
     (`~/.config/agent-mirror/bootstrap-stamp.json`, never in the store).
 - Writes timings to `~/agent_setup_probe.txt`, and always exits 0.
@@ -49,6 +51,9 @@ settings never means pasting it again.
 - A changed store URL, a changed `tool.repo` or a different project needs a new paste. New hosts and new
   variable names (re-render to see them) still go on the settings page.
 - `agent-mirror probe` shows the last session start's steps with their times and exit status.
+- A machine built before agent-mirror 0.5.6 has no Stop hook. Its session start adds it (and says so), but
+  the cached machine keeps the old settings, and a hook added during a session may only be used from a later
+  session: pin 0.5.6 or later in `store.json` and raise the `# revision:` line once to rebuild the machine.
 - Every session start ends with each project's newest box sessions and their notes, and the shared folders
   that have notes, within `session-start --box-timeout` (20 s by default); it prints one line when it cannot
   list. `box send` in a cloud session needs `--note "<what these files are and why>"`; pin agent-mirror

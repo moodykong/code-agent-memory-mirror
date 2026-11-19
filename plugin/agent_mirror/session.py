@@ -9,7 +9,13 @@ install for the runtime's agent (every unit that needs no decision, including th
 memory link), and links to the project's companion repos. Always prints the
 memory index path. On a cloud runtime it ends with each project's newest box
 sessions and their notes, and the shared folders that have notes (box/notes.py;
-bounded by --box-timeout). Each step's name, times and exit status (never its
+bounded by --box-timeout); on a cloud runtime for Claude it also adds hooks the
+machine lacks (the Stop hook on a machine set up before it existed). On every
+runtime it records the session baseline in each project clone that has a box
+(box/unsent.py; what `box unsent` and the stop check count from). On a developer
+machine it ends with one line per project whose box folders owned by this machine
+changed since its last push (box/owners.py; offline, bounded by
+--push-check-timeout). Each step's name, times and exit status (never its
 output) go to <cache>/session-start.jsonl (steplog.py); `agent-mirror probe`
 shows the last record.
 """
@@ -154,6 +160,10 @@ def _session_start(args, ctx, store, runtime, log):
         from agent_mirror.bootstrap import repair_drift
 
         repair_drift(ctx, store, args, log)
+        if (args.agent or agent_for_runtime(runtime)) == "claude":
+            from agent_mirror.hooks import repair_missing
+
+            repair_missing(ctx, runtime, args.dry_run, log)  # a machine set up before the Stop hook existed
     d = discover_projects(ctx, args.project, args.project_path)
     d.report()
     rc = 0
@@ -190,6 +200,9 @@ def _session_start(args, ctx, store, runtime, log):
                 st.status = "failed (exit %s)" % rc
     else:
         out("local runtime: only the store pull runs")
+    from agent_mirror.box.unsent import session_start_baselines
+
+    session_start_baselines(store, d.matched, runtime, args.dry_run)  # after the setup work: what `box unsent` counts
     names = d.names()
     if not names:
         out("memory index: none (no project matched; stores live under %s)" % store.path("memory"))
@@ -205,4 +218,8 @@ def _session_start(args, ctx, store, runtime, log):
         from agent_mirror.box.notes import session_start_notes
 
         session_start_notes(ctx, store, d.matched, runtime, args, log)
+    else:
+        from agent_mirror.box.owners import session_start_push_check
+
+        session_start_push_check(ctx, store, d.matched, args, log)
     return rc, False

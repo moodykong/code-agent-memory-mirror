@@ -63,6 +63,7 @@ Read the output for:
 | Do the cloud identity's allowed and refused actions behave? | Box and custom command sections |
 | Did setup finish inside the caching limit, and how long does the dependency install take? | Setup note, timing section |
 | How long did each session-start step take, and did a drift repair run? | The last session-start record (setup section) |
+| Is the stop check there that asks the session to send or leave behind its unsent files (Claude, agent-mirror 0.5.6 or later)? | Doctor section: `hooks (claude): 4 of 4`; the session-start record has a `hooks check` step |
 
 Each failure has a usual fix:
 

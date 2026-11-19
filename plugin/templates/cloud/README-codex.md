@@ -31,6 +31,9 @@ project name, the store URL, the agent-mirror URL and the runtime marker.
   machine keeps its old setup, so the repair repeats at every session start until the vendor rebuilds it:
   raise the number on the `# revision:` line and save to make it rebuild. If `store.json` pins an
   agent-mirror older than 0.5.2 (no `cloud bootstrap`), the scripts only link the store.
+- Codex has no stop hook here: nothing checks for unsent files when a turn ends. The store's `AGENTS.md`
+  tells the agent to run `agent-mirror box unsent` before finishing and to send (`box send`) or leave behind
+  (`box skip`) each file it lists.
 - Every `agent-mirror session-start` ends with each project's newest box sessions and their notes, and the
   shared folders that have notes, within `--box-timeout` (20 s by default). `box send` in a cloud session
   needs `--note "<what these files are and why>"`; pin agent-mirror 0.5.3 or later in `store.json`, since

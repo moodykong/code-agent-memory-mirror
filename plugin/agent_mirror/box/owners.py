@@ -23,21 +23,29 @@ machine's entries, writes, reads it back and checks them; on a mismatch it tries
 Older versions kept one writer per box in <shared>/_writer.json. When only that marker exists, its
 machine owns every folder currently in the box. The first _owners.json written for such a box carries
 those folders too (otherwise they would look unowned); _writer.json itself is never deleted.
+
+Since 0.5.6 a push also remembers, in the clone (<project>/.agent-mirror/pushed.json, git-excluded), the
+fingerprint and time of each folder it uploaded, and `box release` forgets a released folder there. A
+developer session start uses it with the owners line of the committed index, offline, to say which folders
+this machine owns that changed since its last push (session_start_push_check).
 """
 
 import datetime
 import json
 import os
+import shlex
 import shutil
+import time
 
 from agent_mirror import __version__, machine
 from agent_mirror.box import archive, units
+from agent_mirror.box.local import STATE_DIR, ensure_git_exclude
 from agent_mirror.box.notes import NOTE_KEYS, shown
 from agent_mirror.box.sides import side_for
 from agent_mirror.config import load_user_config
 from agent_mirror.platforms import current
 from agent_mirror.runtime import CLOUD_RUNTIMES
-from agent_mirror.util import err, out, scrub, warn
+from agent_mirror.util import err, out, scrub, short, warn, write_text
 
 OWNERS = "_owners.json"
 LEGACY = "_writer.json"
@@ -47,6 +55,8 @@ TRIES = 3
 TAKE_ALL = "\0all"  # the value of a bare --take-over
 TOOL_FOR_BACKEND = {"azure-blob": "az", "rclone": "rclone"}
 ENTRY_KEYS = ("machine_id", "machine_name", "since", "fingerprint", "updated")
+PUSHED = "pushed.json"  # in <project>/.agent-mirror/: what this machine last uploaded of each folder
+PUSH_CHECK_TIMEOUT = 5.0
 
 
 def utc_now():
@@ -491,6 +501,7 @@ def push(args, s, runtime, backend, plat):
         return 0
     rc = 1 if failures else 0
     if not changes and not convert:
+        record_push(project_path, mid, done, fingerprints, now)
         return rc
     ok, problem, applied, conflicts = update(
         side,
@@ -502,6 +513,7 @@ def push(args, s, runtime, backend, plat):
         legacy_base=state if state.legacy else None,
         list_timeout=args.transfer_timeout,
     )
+    record_push(project_path, mid, set(done) - set(n for n, _ in conflicts), fingerprints, now)
     if conflicts:
         report_conflicts(conflicts, "recorded for this machine")
         rc = 1
@@ -576,6 +588,7 @@ def release(args, s, runtime, backend, plat):
     if not ok:
         err(problem)
         return 1
+    forget_push(s["project_path"], applied)
     out(
         "released %s in %s: no data was deleted; the next push from another machine that has it claims it"
         % (", ".join(sorted(applied)) or "nothing", where(side))
@@ -704,3 +717,176 @@ def index_lines(side, timeout, has_owners, has_legacy):
             keep = dict((k, marker.get(k)) for k in ("machine_id", "machine_name", "date", "tool"))
             lines.append({"path": LEGACY, "writer": keep})
     return lines
+
+
+# this machine's pushes, and the check at a developer session start ----------------------------------------------
+
+
+def pushed_path(project):
+    return os.path.join(project, STATE_DIR, PUSHED)
+
+
+def load_pushed(project):
+    """{folder: {"fingerprint", "at", "machine_id"}} of this clone's last pushes ({} when none)."""
+    try:
+        with open(pushed_path(project), encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    folders = data.get("folders") if isinstance(data, dict) else None
+    return dict((n, e) for n, e in (folders or {}).items() if isinstance(n, str) and isinstance(e, dict))
+
+
+def save_pushed(project, folders):
+    write_text(pushed_path(project), json.dumps({"version": 1, "folders": folders}, indent=1, sort_keys=True) + "\n")
+    ensure_git_exclude(project, os.path.join(project, STATE_DIR))
+
+
+def record_push(project, mid, names, fingerprints, at):
+    """Remember what this push uploaded of each folder. Local only; never raises."""
+    if not names or not mid:
+        return
+    try:
+        folders = load_pushed(project)
+        for name in names:
+            folders[name] = {"fingerprint": fingerprints.get(name), "at": at, "machine_id": mid}
+        save_pushed(project, folders)
+    except OSError:
+        pass
+
+
+def forget_push(project, names):
+    try:
+        folders = load_pushed(project)
+        if any(n in folders for n in names or ()):
+            save_pushed(project, dict((n, e) for n, e in folders.items() if n not in names))
+    except OSError:
+        pass
+
+
+def owned_here(s, mid):
+    """{folder: (fingerprint, time)} of the folders this machine owns, offline: the owners line of the committed
+    index and this clone's record of its pushes. A folder the index gives to another machine is not this
+    machine's; for a folder both name, the newer of the two (by time) is the reference."""
+    folders, _ = from_index(s["index_path"])
+    folders = folders or {}
+    record = load_pushed(s["project_path"])
+    owned = {}
+    for name, e in folders.items():
+        if e.get("machine_id") == mid:
+            owned[name] = (e.get("fingerprint"), str(e.get("updated") or e.get("since") or ""))
+    for name, e in record.items():
+        if e.get("machine_id") != mid or (name in folders and name not in owned):
+            continue
+        mine = (e.get("fingerprint"), str(e.get("at") or ""))
+        if name not in owned or mine[1] >= owned[name][1]:
+            owned[name] = mine
+    return owned
+
+
+def changed_since_push(s, mid, deadline):
+    """(owned folders here that changed since this machine's last push, number owned, True when cut short).
+
+    A folder whose walk finished is compared by fingerprint (as `box owners` does; a copy only fetched from the
+    box counts as unchanged). When the time runs out, a folder still counts as changed when one file seen so far
+    is newer than its last push; otherwise it is not reported."""
+    from agent_mirror.box.sessions import parse_utc
+
+    owned = owned_here(s, mid)
+    if not owned:
+        return [], 0, False
+    layout = units.Layout(s)
+    changed, cut = [], False
+    for name in sorted(owned):
+        unit = layout.by_name.get(name)
+        if unit is None:
+            continue
+        if time.monotonic() > deadline:
+            cut = True
+            break
+        sm = layout.summary(unit, deadline=deadline)
+        fingerprint, at = owned[name]
+        if sm["fingerprint"] is not None:
+            if sm["files"] and layout.compare(unit, sm, fingerprint) == "different":
+                changed.append(name)
+            continue
+        cut = True
+        when = parse_utc(at)
+        if when is not None and any(e["mtime"] > when.timestamp() for e in sm["entries"]):
+            changed.append(name)
+    return changed, len(owned), cut
+
+
+def push_check_line(ctx, project, path, deadline, timeout):
+    """(line or None, step status) for one project at a developer session start."""
+    from agent_mirror.box.notes import quiet_context
+
+    cfg = load_user_config(ctx.plat)
+    mid, _ = machine.identity(cfg)
+    if not mid:
+        return None, "skipped (no machine id here)"
+    role = machine.box_role(cfg, project)
+    if role in ("reader", "none"):
+        return None, "skipped (box role %s)" % role
+    if not os.path.isdir(path):
+        return None, "skipped (no project folder)"
+    s = quiet_context(ctx, project, path)
+    if s is None:
+        return None, "skipped (box not configured)"
+    changed, owned, cut = changed_since_push(s, mid, deadline)
+    if not owned:
+        return None, "skipped (nothing owned here)"
+    flag = " --project %s" % shlex.quote(project)
+    if changed:
+        n = len(changed)
+        names = ", ".join(changed[:5]) + (" and %d more" % (n - 5) if n > 5 else "")
+        line = (
+            "box of %s: %d owned folder%s changed since the last push (%s); upload %s with: agent-mirror box push%s"
+            % (
+                project,
+                n,
+                "" if n == 1 else "s",
+                names,
+                "it" if n == 1 else "them",
+                flag,
+            )
+        )
+        if cut:
+            line += " (the check stopped after %g s; others may have changed too)" % timeout
+        return line, "ok (%d changed%s)" % (n, ", cut short" if cut else "")
+    if cut:
+        return (
+            "box of %s: the check of this machine's box folders stopped after %g s; `agent-mirror box owners%s` "
+            "compares them" % (project, timeout, flag),
+            "ok (cut short)",
+        )
+    return None, "ok (none changed)"
+
+
+def session_start_push_check(ctx, store, matched, args, log):
+    """Developer session start: one line per project whose box folders owned by this machine changed since its last
+    push. Offline (the committed index and local records), bounded by --push-check-timeout in all; never fails the
+    session and prints nothing when nothing changed or nothing is owned here."""
+    from agent_mirror.box.unsent import box_configured
+
+    timeout = float(getattr(args, "push_check_timeout", PUSH_CHECK_TIMEOUT) or 0)
+    deadline = time.monotonic() + max(0.0, timeout)
+    for project, path in matched:
+        try:
+            if not box_configured(store.load_env(project).get("box")):
+                continue
+        except Exception:  # noqa: BLE001
+            continue
+        with log.step("box push check (%s)" % project) as st:
+            if timeout <= 0:
+                st.status = "skipped (--push-check-timeout 0)"
+                continue
+            if args.dry_run:
+                st.status = "skipped (dry run)"
+                continue
+            try:
+                line, st.status = push_check_line(ctx, project, path, deadline, timeout)
+            except (Exception, SystemExit) as exc:  # noqa: BLE001 (never fail the session)
+                line, st.status = None, "failed (%s)" % short(exc, 60)
+            if line:
+                out(line)

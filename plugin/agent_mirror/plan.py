@@ -52,6 +52,7 @@ OLD_TEMPLATE_DIGESTS = {
     "472f1f3d157fed70fd6da53ba5bcd15f6262c0bc2b7dc4c86ed089e6b3629331",  # 0.2.0 and 0.2.1
     "d9d6715bd6dff5b802070b9b359dd546cbf5868e58fe59c6db8c5acc900e9b43",  # 0.3.0 to 0.4.0
     "0df14e1567c7e9ff9242b84959bf8c5011b112a388c913089e02a91e60fe5b4d",  # 0.5.0 to 0.5.2
+    "10a591eab19e8b47a50eb61bf0209ee78afc986354cb141bfcc0e22af7d351e6",  # 0.5.3 to 0.5.5
 }
 BOX_WALK_SECONDS = 10.0
 

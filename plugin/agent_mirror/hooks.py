@@ -1,30 +1,45 @@
-"""hooks install|uninstall|status, and the `hook memory-write` handler.
+"""hooks install|uninstall|status, and the `hook memory-write` and `hook stop-check` handlers.
 
-Three hooks go into Claude Code's user settings (<claude home>/settings.json):
+Three hooks go into Claude Code's user settings (<claude home>/settings.json) on every machine:
   SessionStart              agent-mirror session-start
   PostToolUse (Write|Edit)  agent-mirror hook memory-write   (async)
   SessionEnd                agent-mirror sync
+and one more on a cloud runtime only (developer machines never get it: no added time at the end of a turn):
+  Stop                      agent-mirror hook stop-check
 
 Every other setting and hook in the file is kept. Our entries are recognised
-by their command (the agent-mirror launcher followed by one of the three
-subcommands), so uninstall removes exactly those and nothing else.
+by their command (the agent-mirror launcher followed by one of the four
+subcommands), so uninstall removes exactly those and nothing else, and
+install on a developer machine removes a Stop entry of ours.
+
+The stop check (Claude Code's Stop event): on a cloud runtime, when the session's project clones hold
+files that are in no git commit and not in the box (box/unsent.py), it prints
+{"decision": "block", "reason": "..."} so that the agent goes on with the reason as its instruction: send
+each file, or declare it disposable with `box skip`. It never blocks twice for the same set of files (it keeps
+short digests of the files it last blocked on, never their names, in <cache>/stop-check.json, and blocks again
+only when the set gained a file), at most STOP_BLOCKS times a session, and never when its check was cut short
+or failed. Anywhere else, or on any error, it exits 0 and prints nothing.
 """
 
 import contextlib
+import io
 import json
 import os
 import re
 import shutil
 import sys
+import threading
+import time
 import traceback
 
 from agent_mirror import PLUGIN_ROOT
-from agent_mirror.util import err, iso_now, now_stamp, out, tilde, within, write_text
+from agent_mirror.runtime import CLOUD_RUNTIMES, detect_runtime
+from agent_mirror.util import err, iso_now, now_stamp, out, short, tilde, within, write_text
 
 OURS_RX = re.compile(
     r"""agent-mirror(?:\.cmd)?['"]?"""
     r"""(?:\s+--store\s+(?:"[^"]*"|'[^']*'|\S+))?"""
-    r"""\s+(?P<sub>session-start|hook\s+memory-write|sync)\s*$"""
+    r"""\s+(?P<sub>session-start|hook\s+memory-write|hook\s+stop-check|sync)\s*$"""
 )
 
 # (event, matcher, subcommand, extra keys)
@@ -33,26 +48,40 @@ HOOKS = (
     ("PostToolUse", "Write|Edit", ["hook", "memory-write"], {"async": True, "timeout": 300}),
     ("SessionEnd", None, ["sync"], {"timeout": 120}),
 )
+# hooks for a cloud runtime only: Claude Code stops the command after `timeout` seconds; the check itself stops
+# much earlier (--time-limit, and a hard stop at STOP_HARD_EXTRA seconds after it)
+CLOUD_HOOKS = (("Stop", None, ["hook", "stop-check"], {"timeout": 30}),)
+ALL_HOOKS = HOOKS + CLOUD_HOOKS
+STOP_STATE = "stop-check.json"
+STOP_BLOCKS = 3  # blocks per session at most
+STOP_HARD_EXTRA = 12  # seconds after --time-limit when the stop check exits 0 whatever it is doing
+STOP_SHOW = 15  # lines of the listing in the reason, per project
+
+
+def hook_set(runtime):
+    """The hooks a runtime gets: three everywhere, plus the Stop hook on a cloud runtime."""
+    return HOOKS + (CLOUD_HOOKS if runtime in CLOUD_RUNTIMES else ())
 
 
 def classify(command):
-    """'session-start', 'hook memory-write' or 'sync' when the command is one of ours, else None."""
+    """'session-start', 'hook memory-write', 'hook stop-check' or 'sync' when the command is one of ours, else None."""
     if not isinstance(command, str):
         return None
     m = OURS_RX.search(command.strip())
     return " ".join(m.group("sub").split()) if m else None
 
 
-def wanted_hooks(ctx, launcher=None):
-    """[(event, matcher, key, hook entry)] for the current launcher."""
+def wanted_hooks(ctx, launcher=None, runtime=None):
+    """[(event, matcher, key, hook entry)] for the current launcher and runtime (default: the detected one)."""
     plat = ctx.plat
     launcher = launcher or plat.launcher(PLUGIN_ROOT)
+    runtime = detect_runtime() if runtime is None else runtime
     prefix = [launcher]
     if ctx.store_source_for_commands() == "flag":
         store = ctx.require_store()
         prefix += ["--store", store.root]
     found = []
-    for event, matcher, sub, extra in HOOKS:
+    for event, matcher, sub, extra in hook_set(runtime):
         entry = {"type": "command", "command": plat.command_line(prefix + sub)}
         entry.update(extra)
         found.append((event, matcher, " ".join(sub), entry))
@@ -110,12 +139,24 @@ def remove_ours(hooks, event, key):
     return removed
 
 
-def merge_install(settings, wanted):
-    """Add our hooks to a settings dict in place. Returns a list of changes (empty if none)."""
+def unwanted_hooks(runtime):
+    """[(event, key)] of our hooks that a runtime must not have (the Stop hook on a developer machine)."""
+    keep = set((e, " ".join(sub)) for e, _, sub, _ in hook_set(runtime))
+    return [(e, " ".join(sub)) for e, _, sub, _ in ALL_HOOKS if (e, " ".join(sub)) not in keep]
+
+
+def merge_install(settings, wanted, unwanted=()):
+    """Add our hooks to a settings dict in place, and remove our `unwanted` [(event, key)] entries. Returns a list
+    of changes (empty if none); a removal reads "removed <event>: ..."."""
     if "hooks" in settings and not isinstance(settings["hooks"], dict):
         raise ValueError('"hooks" in the settings file is not an object')
     hooks = settings.setdefault("hooks", {})
     changes = []
+    for event, key in unwanted:
+        if event in hooks and not isinstance(hooks[event], list):
+            raise ValueError('"hooks.%s" in the settings file is not a list' % event)
+        if remove_ours(hooks, event, key):
+            changes.append("removed %s: agent-mirror %s (only a cloud machine runs it)" % (event, key))
     for event, matcher, key, entry in wanted:
         if event in hooks and not isinstance(hooks[event], list):
             raise ValueError('"hooks.%s" in the settings file is not a list' % event)
@@ -142,7 +183,7 @@ def merge_uninstall(settings):
     if not isinstance(hooks, dict):
         return []
     removed = []
-    for event, _, sub, _ in HOOKS:
+    for event, _, sub, _ in ALL_HOOKS:
         key = " ".join(sub)
         n = remove_ours(hooks, event, key)
         removed += ["%s: agent-mirror %s" % (event, key)] * n
@@ -181,8 +222,12 @@ def cmd_hooks(args, ctx):
     if args.action == "install":
         ctx.require_store()  # the hooks would fail at every session without one
     before = json.dumps(settings, indent=2)
+    runtime = detect_runtime()
     try:
-        changes = merge_install(settings, wanted_hooks(ctx)) if args.action == "install" else merge_uninstall(settings)
+        if args.action == "install":
+            changes = merge_install(settings, wanted_hooks(ctx, runtime=runtime), unwanted_hooks(runtime))
+        else:
+            changes = merge_uninstall(settings)
     except ValueError as exc:
         err("%s in %s; nothing changed" % (exc, tilde(path)))
         return 1
@@ -193,7 +238,7 @@ def cmd_hooks(args, ctx):
     if args.dry_run:
         out("dry run: nothing will change")
         for c in changes:
-            out("would %s %s" % (verb, c))
+            out("would %s" % ("remove " + c[len("removed ") :] if c.startswith("removed ") else "%s %s" % (verb, c)))
         return 0
     if json.dumps(settings, indent=2) == before:
         out("hooks %s: nothing to change in %s" % (args.action, tilde(path)))
@@ -203,16 +248,18 @@ def cmd_hooks(args, ctx):
         out("backed up %s to %s" % (tilde(path), tilde(dest)))
     write_text(path, json.dumps(settings, indent=2) + "\n")
     for c in changes:
-        out("%s %s" % ("added" if args.action == "install" else "removed", c))
+        out(c if c.startswith("removed ") else "%s %s" % ("added" if args.action == "install" else "removed", c))
     out("hooks %s: %d change(s) written to %s" % (args.action, len(changes), tilde(path)))
     return 0
 
 
 def hooks_status(ctx, settings, path):
     hooks = settings.get("hooks") if isinstance(settings.get("hooks"), dict) else {}
+    runtime = detect_runtime()
     out("settings: %s (%s)" % (tilde(path), "exists" if os.path.isfile(path) else "missing"))
     installed = 0
-    for event, matcher, key, entry in wanted_hooks(ctx):
+    wanted = wanted_hooks(ctx, runtime=runtime)
+    for event, matcher, key, entry in wanted:
         pos = our_positions(hooks, event, key)
         if not pos:
             out("  MISSING    %s agent-mirror %s" % (event, key))
@@ -224,20 +271,63 @@ def hooks_status(ctx, settings, path):
             out("  OK         %s %s" % (event, current))
         else:
             out("  OTHER PATH %s %s (install rewrites it)" % (event, current))
-    out("hooks: %d of %d installed for this launcher" % (installed, len(HOOKS)))
+    for event, key in unwanted_hooks(runtime):
+        if our_positions(hooks, event, key):
+            out("  EXTRA      %s agent-mirror %s (only a cloud machine runs it; install removes it)" % (event, key))
+    out("hooks: %d of %d installed for this launcher (%s)" % (installed, len(wanted), runtime))
     return 0
 
 
 def status_line(ctx):
-    """One line for doctor."""
+    """One line for doctor: how many of the hooks this runtime expects are there (3, or 4 on a cloud runtime)."""
     path = ctx.plat.claude_settings()
     try:
         settings, _ = load_settings(path)
     except (OSError, ValueError):
         return "cannot read %s" % tilde(path)
     hooks = settings.get("hooks") if isinstance(settings.get("hooks"), dict) else {}
-    n = sum(1 for event, _, sub, _ in HOOKS if our_positions(hooks, event, " ".join(sub)))
-    return "%d of %d agent-mirror hooks in %s" % (n, len(HOOKS), tilde(path))
+    expected = hook_set(detect_runtime())
+    n = sum(1 for event, _, sub, _ in expected if our_positions(hooks, event, " ".join(sub)))
+    return "%d of %d agent-mirror hooks in %s" % (n, len(expected), tilde(path))
+
+
+def repair_missing(ctx, runtime, dry_run, log):
+    """Cloud session start: add the hooks this runtime expects and Claude's settings lack, when some of ours are
+    there (a machine set up by an older version, before the Stop hook). Never raises."""
+    try:
+        with log.step("hooks check") as st:
+            st.status = _repair_missing(ctx, runtime, dry_run)
+    except Exception as exc:  # noqa: BLE001 (never fail the session)
+        out("warning: hooks check failed: %s; the session goes on" % short(exc, 120))
+
+
+def _repair_missing(ctx, runtime, dry_run):
+    path = ctx.plat.claude_settings()
+    try:
+        settings, existed = load_settings(path)
+    except (OSError, ValueError) as exc:
+        return "skipped (cannot read the settings: %s)" % short(exc, 60)
+    hooks = settings.get("hooks") if isinstance(settings.get("hooks"), dict) else {}
+    wanted = wanted_hooks(ctx, runtime=runtime)
+    missing = [w for w in wanted if not our_positions(hooks, w[0], w[2])]
+    if not missing:
+        return "ok"
+    if len(missing) == len(wanted):
+        return "skipped (no agent-mirror hooks here)"
+    names = ", ".join("%s (agent-mirror %s)" % (w[0], w[2]) for w in missing)
+    if dry_run:
+        out("would add the missing hooks %s to %s" % (names, tilde(path)))
+        return "skipped (dry run)"
+    merge_install(settings, missing)
+    if existed:
+        backup_settings(ctx, path)
+    write_text(path, json.dumps(settings, indent=2) + "\n")
+    out(
+        "hooks: added %s to %s (this machine was set up before it existed); Claude Code may only use it from a "
+        "later session: raise the `# revision:` line of the setup script so the vendor rebuilds the machine with it"
+        % (names, tilde(path))
+    )
+    return "ok (added %d)" % len(missing)
 
 
 # hook memory-write ------------------------------------------------------------------
@@ -262,6 +352,8 @@ def is_store_write(path, store_root, claude_home):
 
 def cmd_hook(args, ctx):
     """Never fails the tool call: always exits 0."""
+    if args.name == "stop-check":
+        return cmd_stop_check(args, ctx)
     if args.name != "memory-write":
         return 0
     try:
@@ -291,3 +383,134 @@ def cmd_hook(args, ctx):
     except OSError:
         pass
     return 0
+
+
+# hook stop-check ------------------------------------------------------------------------------------------------
+
+
+def cmd_stop_check(args, ctx, stdin=None):
+    """Claude Code's Stop hook. Prints {"decision": "block", "reason": ...} or nothing; always exits 0.
+
+    Off a cloud runtime it returns at once without reading anything. On a cloud runtime every step runs with its
+    output kept back, and a timer ends the process with exit 0 at --time-limit + STOP_HARD_EXTRA seconds whatever
+    it is doing (a hung git, a stdin that never closes)."""
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+        runtime = detect_runtime()
+    if runtime not in CLOUD_RUNTIMES:
+        return 0
+    limit = max(0.0, float(getattr(args, "time_limit", 8.0) or 0.0))
+    guard = threading.Timer(limit + STOP_HARD_EXTRA, os._exit, args=(0,))
+    guard.daemon = True
+    guard.start()
+    decision = None
+    try:
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            text = (stdin if stdin is not None else sys.stdin).read()
+            decision = stop_decision(ctx, text, limit)
+    except BaseException:  # noqa: BLE001 (a hook never fails the turn: no block)
+        decision = None
+    finally:
+        guard.cancel()
+    if decision:
+        sys.stdout.write(json.dumps(decision) + "\n")
+        sys.stdout.flush()
+    return 0
+
+
+def stop_state_path(plat):
+    return os.path.join(plat.cache_dir(), STOP_STATE)
+
+
+def load_stop_state(plat, session):
+    """{"session", "blocks", "keys", ...} for this session (a new session starts from nothing)."""
+    try:
+        with open(stop_state_path(plat), encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        data = None
+    if not isinstance(data, dict) or data.get("session") != session:
+        return {"session": session, "blocks": 0, "keys": []}
+    data["keys"] = [k for k in data.get("keys") or [] if isinstance(k, str)]
+    data["blocks"] = int(data.get("blocks") or 0)
+    return data
+
+
+def save_stop_state(plat, state, outcome):
+    state["last"] = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "outcome": outcome}
+    try:
+        write_text(stop_state_path(plat), json.dumps(state, sort_keys=True) + "\n")
+    except OSError:
+        pass
+
+
+def stop_decision(ctx, text, limit):
+    """The Stop hook's decision dict, or None to let the agent stop. Reads only local files and git."""
+    from agent_mirror.box import unsent
+    from agent_mirror.projects import discover_projects
+
+    data = json.loads(text) if text and text.strip() else None
+    if not isinstance(data, dict):
+        return None  # unreadable input: never block on it
+    session = str(data.get("session_id") or "")
+    active = data.get("stop_hook_active") is True
+    store = ctx.store_or_none(quiet=True)
+    if store is None:
+        return None
+    cwd = data.get("cwd") if isinstance(data.get("cwd"), str) and os.path.isdir(data.get("cwd")) else None
+    start = ctx.plat.env.get("CLAUDE_PROJECT_DIR") or cwd or os.getcwd()
+    deadline = time.monotonic() + limit
+    d = discover_projects(ctx, None, start)
+    results = []
+    state = load_stop_state(ctx.plat, session)
+    for project, path in d.matched:
+        box = store.load_env(project).get("box") or {}
+        if not os.path.isdir(path) or not unsent.box_configured(box):
+            continue
+        left = deadline - time.monotonic()
+        if left <= 0:
+            save_stop_state(ctx.plat, state, "passed (out of time)")
+            return None
+        r = unsent.find_unsent(project, path, box, left, keys=True)
+        if not r["complete"] or r.get("problem"):
+            save_stop_state(ctx.plat, state, "passed (check of %s cut short or failed)" % project)
+            return None  # a check that could not finish never blocks
+        if r["files"]:
+            results.append(r)
+    keys = set(k for r in results for k in r["keys"])
+    if not keys:
+        save_stop_state(ctx.plat, state, "passed (nothing unsent)")
+        return None
+    gained = keys - set(state["keys"])
+    if not gained:
+        # the set it last blocked on, or part of it: the agent has seen it (stop_hook_active or not)
+        save_stop_state(ctx.plat, state, "passed (no new unsent files%s)" % (", stop_hook_active" if active else ""))
+        return None
+    if state["blocks"] >= STOP_BLOCKS:
+        save_stop_state(ctx.plat, state, "passed (already blocked %d times)" % state["blocks"])
+        return None
+    state["blocks"] += 1
+    state["keys"] = sorted(keys)
+    save_stop_state(ctx.plat, state, "blocked (%d files)" % len(keys))
+    return {"decision": "block", "reason": stop_reason(results, several=len(d.matched) > 1)}
+
+
+def stop_reason(results, several=False):
+    """What the agent is told to do: the compact listing, the two commands and the keep/leave criteria."""
+    from agent_mirror.box import unsent
+
+    lines = [
+        "agent-mirror: this cloud machine is thrown away after the session, and these files of the project clone "
+        "are in no git commit and not in the box:"
+    ]
+    for r in results:
+        lines.append(
+            "%s (%s): %d file%s" % (r["project"], r["project_path"], r["files"], "" if r["files"] == 1 else "s")
+        )
+        lines += unsent.listing_lines(r, cap=STOP_SHOW)
+    lines.append("For each one, either send it: %s" % unsent.SEND)
+    lines.append("or declare it disposable: %s" % unsent.SKIP)
+    if several:
+        lines.append("(the session has several project clones: add --project NAME to both)")
+    lines.append(unsent.CRITERIA)
+    return "\n".join(lines)

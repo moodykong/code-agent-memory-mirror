@@ -126,6 +126,12 @@ bootstrap --project NAME --vendor claude|codex`. Changing these three keys never
 - Each new session starts from the vendor's cached machine, which still holds the stamp of the setup,
   so the repair repeats at every session start until the vendor rebuilds the machine. To make it rebuild,
   raise the number on the `# revision:` line of the pasted script and save.
+- On a Claude cloud machine the same session start also checks Claude's settings for the agent-mirror hooks
+  (step `hooks check`): when some are there but not all the runtime expects (a machine built before 0.5.6
+  has three, without the Stop hook), it adds the missing ones and says so. Claude Code may only use a hook
+  added during a running session from a later session on, and the next session starts from the cached
+  machine again, without it: raise the `# revision:` line once so the vendor rebuilds the machine with all
+  four hooks.
 - So `setup_commands` must be safe to run twice (`command -v jq >/dev/null || apt-get install -y jq`).
   They run as root on a cloud machine. They come only from the default branch, which a cloud session never
   writes: a developer machine's sync applies only `memory/` from an inbox branch and holds everything
@@ -208,6 +214,7 @@ Settings for on-demand retrieval (all optional):
 | `min_free_bytes` | `2147483648` (2 GiB) | free disk that every fetch and receive must leave; `--force` overrides |
 | `receive_dir` | `_agent_outbound` | where `box receive` puts the sessions it downloads (relative to the project folder, or absolute; the default keeps its older name) |
 | `mount_dir` | `_box` | where `box mount` mounts the shared side (relative to the project folder, or absolute) |
+| `unsent_ignore` | none | more patterns (the include and exclude syntax) that `box unsent` and the stop check leave out, for example `["**/*.ckpt.tmp", "logs/**"]`; see "Unsent files" |
 
 Patterns: `**` crosses folders, `*` and `?` do not, and `**/` also matches no folder. A pattern without
 `/` matches a file name at any depth.
@@ -531,6 +538,17 @@ A rule for your instructions file (the store's `AGENTS.md`), so that cloud agent
   before using files from the box.
 ```
 
+The keep or leave rule that goes with it (see "Unsent files" below; the template `AGENTS.md` has both):
+
+```
+- Before finishing a cloud session, run `agent-mirror box unsent`; for each file it lists, send it with
+  `agent-mirror box send PATH --label NAME --note "what, why, what next"`, or declare it disposable with
+  `agent-mirror box skip PATH... --reason "why it can go"`.
+- KEEP results that took real time or money to produce, analysis outputs, generated reports and figures,
+  anything a later session would otherwise have to redo. LEAVE caches, anything rebuildable in minutes,
+  files already in git, secrets and env files.
+```
+
 #### Cost on slow remotes
 
 On some remotes (a consumer cloud drive through rclone, say) every call to rclone or az costs seconds: the
@@ -545,12 +563,167 @@ however many sessions the box holds:
 | `box prune --yes` | rclone: 5 (listing, manifests, one `rclone delete` with an anchored filter `+ /<session id>/**` per selected namespace and `- **`, one `rclone rmdirs` with the same filters for the emptied folders, a check); azure-blob: one `delete-batch` per selected namespace plus 3 |
 | `box index` | 2 for its session summary |
 | cloud `session-start` | the 2 of `box sessions` per project (azure-blob: plus `az account show`, and a sign-in when it is needed); the folder notes come from the committed index |
+| `box unsent`, `hook stop-check`, the developer `session-start` push check | none: git and local files only |
+| `box skip` | 2 for the first record of a session (manifest write, read back), 3 later (read, write, read back); azure-blob on a cloud runtime: plus `az account show` |
 
 Fetching by full id is the cheapest lookup: it never looks at other sessions. `--limit` cuts what
 `box sessions` reads: rclone downloads only the manifests it shows; azure-blob downloads every manifest in
 the one batched call (one pattern) and the list is cut afterwards. A batched azure-blob download is one
 `az storage blob download-batch` whose pattern is chosen from the listing; when every pattern would also
 fetch more than 16 MiB of other files, it goes file by file instead.
+
+### Unsent files (`box unsent`, `box skip` and the stop check)
+
+A cloud machine is thrown away after the session, and memory is synced by hooks while box files are not:
+a result the session made and never sent is lost. The program detects such files, the agent judges each
+one, and on a Claude cloud machine a Stop hook makes sure the judging happens.
+
+**`agent-mirror box unsent [--json] [--check] [--time-limit 5]`** lists the files of the project clone
+for which all of these hold:
+
+- git does not track it (untracked or ignored); tracked files are git's business;
+- its modification time is at or after the session baseline (2 seconds of slack for coarse file-system
+  clocks);
+- it is not left out by name or rule: env files (`.env`, `*.env`); links (never followed or listed); these
+  folders at any depth, never entered: `.git`, `.agent-mirror`, `__pycache__`, `.venv`, `venv`,
+  `node_modules`, `.cache`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.tox`, `.nox`; a folder with its
+  own `.git` (a nested clone or a worktree travels through its own git); the box's `mount_dir` and
+  `receive_dir` inside the clone; the `box.exclude` patterns; and the optional `box.unsent_ignore` patterns.
+  `dist` and `build` are deliberately not on the list, because some projects keep results under those names;
+  add them to `box.unsent_ignore` when they are build output for you;
+- it was not fetched from the box and left unchanged since (`.agent-mirror/fetched.json`, as `box evict`
+  uses it);
+- it was not sent in this session with the same size and modification time: `box send` records each file
+  it uploaded in the local session record (`.agent-mirror/session.json`, key `sent`);
+- it is not under a path declared disposable with `box skip` (key `skipped` of the same record).
+
+The **session baseline** is a time that `session-start` records for each project clone that has a box, in
+`<clone>/.agent-mirror/baseline.json` (git-excluded, like the other records there), at the end of its run:
+after the setup steps, the dependency sync and the start commands, so what they make is not counted as the
+session's work. A later session start of the same session keeps it (Claude Code runs the session start
+again on a resume, a clear and a compaction). Same session means what `box send` uses for its session: on
+a cloud runtime the same runtime and the same machine (host name), on a developer runtime the same runtime
+and a baseline at most 24 hours old. Without a baseline (`session-start` never ran here, or an older version
+ran it), `box unsent` says so in one line and counts from the time the clone was made: the time of the first
+entry of git's log of HEAD (`git rev-parse --git-path logs/HEAD`). On a cloud machine the clone is made for
+the session, so that is close to the session's start; on a developer machine it is older and lists more,
+which is the safe side. Without that either (not a git clone, or no log), every untracked or ignored file
+counts.
+
+The listing groups the files by top-level folder, largest first. A folder whose files are all new (inside
+what git reports as a wholly untracked or ignored folder) is one line, `folder/ (N files, size)`; other files
+are listed one by one under `in folder/: N files, size`. At most 30 lines, then `and N more files, size`:
+
+```
+unsent in demo (/home/user/demo): 6 files, 2.3 MiB, changed since 2026-11-19T14:44:29Z (session start), in no git commit and not in the box:
+  in results/: 3 files, 2.0 MiB
+    results/run-3/ (2 files, 2.0 MiB)
+    results/summary.csv (4.9 KiB)
+  figures/ (1 file, 293.0 KiB)
+  notes.md (1.2 KiB)
+  run.log (4 B)
+left out: 1 older than the baseline, 2 folders left out by name
+keep a file or folder: agent-mirror box send PATH --label NAME --note "what, why, what next"
+leave it behind:       agent-mirror box skip PATH... --reason "why it can go"
+```
+
+A folder line counts the files `box unsent` considers; `box send` of that folder applies the box's exclude
+rules and env-file rule too, but not the list of folders left out by name.
+
+- It is read-only and offline: one `git status --ignored` (without the index lock, so it never gets in the
+  way of a git command running at the same time), a walk of what git reports, and the local records. The
+  whole check stops at `--time-limit` seconds (default 5) and then says `the check was cut short after 5 s`.
+- `--json` prints the document: `baseline` (`source`: `session-start`, `clone` or `none`, `at`, `seconds`),
+  `complete`, `files`, `bytes`, `checked`, `entries` (the lines above), `paths` (every file with its size and
+  time, the first 2000, then `paths_more`), `left_out` (a count per reason: `before_baseline`, `fetched`,
+  `sent`, `skipped`, `env`, `links`, `builtin`, `nested_git`, `managed`, `excluded`, `ignored`) and `warnings`.
+- Exit code: 0. With `--check`: 0 when nothing is unsent, 3 when something is unsent or the check could not
+  finish (cut short, or git failed). 1 when no project matched or its folder is missing, 2 for bad arguments.
+  A project whose box is not configured has nothing to send to: it says so and exits 0.
+- It works on developer machines too, from the baseline of the last session start there (24 hours).
+
+**`agent-mirror box skip PATH... --reason TEXT [--label TEXT]`** declares files or folders of the clone
+disposable for this session. Each PATH is taken relative to the clone, then to the current folder (or as an
+absolute path); it must exist and be inside the clone, else nothing is recorded (exit 2 for a path outside
+the clone, 1 for one that does not exist). The reason follows the rules of a note: one line, at most 500
+characters, refused when it looks like it holds a secret. It is recorded twice:
+
+- in the local session record (`skipped`, a list of `{"at", "reason", "paths"}`), so `box unsent` and the stop
+  check leave out every file under those paths for the rest of the session;
+- in the session's manifest on the box, as an entry of its optional `skipped` list (the newest 20 entries,
+  each with at most 50 paths and the count of the others in `more`), so a later session sees what was left
+  behind and why: `box sessions` prints `(N paths left behind: reason)` under the session, and
+  `box fetch --session` prints `left behind (time): paths; reason: ...`. A skip before any send starts the
+  session (a manifest with no files). When the box is not configured or cannot be reached (no transfer
+  program, no sign-in, a failed write), it says so in one line, keeps the local record and exits 0.
+
+**The stop check** (Claude Code only): on a cloud runtime, `hooks install` (and so `cloud bootstrap`) adds a
+fourth hook, `Stop: agent-mirror hook stop-check` with a timeout of 30 s. Developer machines never get it, so
+it adds no time to their turns, and `hooks install` there removes one of ours if it finds it. When the agent
+ends its turn, the hook:
+
+- exits 0 at once and prints nothing anywhere but a cloud runtime;
+- runs the check of `box unsent` for each project clone of the session that has a box (the projects
+  `session-start` finds from `CLAUDE_PROJECT_DIR`, else the `cwd` of the hook input), within 8 seconds in all
+  (`--time-limit`), and a hard stop with exit 0 twelve seconds after that;
+- when files are unsent, prints `{"decision": "block", "reason": "..."}`, which keeps the agent working with
+  the reason as its instruction:
+
+  ```
+  agent-mirror: this cloud machine is thrown away after the session, and these files of the project clone are in no git commit and not in the box:
+  demo (/home/user/demo): 6 files
+    in results/: 3 files, 2.0 MiB
+      results/run-3/ (2 files, 2.0 MiB)
+      results/summary.csv (4.9 KiB)
+    figures/ (1 file, 293.0 KiB)
+    notes.md (1.2 KiB)
+    run.log (4 B)
+  For each one, either send it: agent-mirror box send PATH --label NAME --note "what, why, what next"
+  or declare it disposable: agent-mirror box skip PATH... --reason "why it can go"
+  KEEP results that took real time or money to produce, analysis outputs, generated reports and figures, anything a later session would otherwise have to redo. LEAVE caches, anything rebuildable in minutes, files already in git, secrets and env files.
+  ```
+
+- never blocks twice on the same set: it keeps short digests of the files it last blocked on (never their
+  names) in `<cache>/stop-check.json`, per `session_id` of the hook input, and blocks again only when the
+  set gained a file. The set shrinking (files sent or skipped) never blocks. `stop_hook_active` (the agent is
+  already continuing because of a stop hook) is honoured by the same rule: it blocks only on files that were
+  not in the set it last blocked on. At most 3 blocks per session; Claude Code itself also caps consecutive
+  continuations;
+- never blocks when its input cannot be read, on any error, or when a check was cut short or git failed; it
+  never prints file contents.
+
+The contract it relies on is Claude Code's hooks reference (the `Stop` event: stdin JSON with `session_id`,
+`cwd`, `hook_event_name` and `stop_hook_active`; exit 0 with `{"decision": "block", "reason": ...}` on stdout
+prevents the stop and gives Claude the reason). UNVERIFIED on a real cloud machine: that Claude Code on the
+web runs user-level Stop hooks from `~/.claude/settings.json` (see the cloud README's notes), how it combines
+ours with the vendor's own stop hook (which asks to commit and push untracked files), and that a hook added
+during a running session is used before the next session. Codex has no stop hook here: its instructions say
+to run `box unsent` before finishing.
+
+**Machines built before 0.5.6.** A cloud machine set up by an older version has three hooks. Its session
+start adds the missing Stop hook (see "Cloud setup and drift repair" above), but the vendor's cached machine
+keeps the old settings: raise the `# revision:` line of the pasted setup script once, so that the next build
+runs `cloud bootstrap` with this version (pin 0.5.6 or later in `store.json` `tool.ref`; `cloud render`
+warns about an older pin) and the machine has all four hooks from the start. Old pasted scripts keep working
+unchanged.
+
+**On a developer machine**, `session-start` ends with one line per project whose box has folders owned by
+this machine that changed since this machine last pushed them:
+
+```
+box of demo: 2 owned folders changed since the last push (results, ws-a); upload them with: agent-mirror box push --project demo
+```
+
+It prints nothing when nothing changed, nothing is owned here, or the machine's box role is `reader` or
+`none`. It makes no remote call: the owning machine and the fingerprint come from this clone's record of its
+own pushes (`.agent-mirror/pushed.json`, written by `box push` since 0.5.6 and cleared for a folder by
+`box release`) and from the owners line of the committed box index, whichever is newer; a folder the index
+gives to another machine is not reported. Each owned folder is compared by its fingerprint (as `box owners`
+compares, so a copy only fetched from the box is not a change). All of it stops at `--push-check-timeout`
+seconds (default 5; 0 skips it). When the time runs out, a folder still counts as changed when a file seen
+so far is newer than its last push (a sound but partial signal: it misses deletions); when none was found,
+it prints one short line (`box of demo: the check of this machine's box folders stopped after 5 s; ...`).
+The step is in the session-start log as `box push check (<project>)`.
 
 ### `box receive`
 

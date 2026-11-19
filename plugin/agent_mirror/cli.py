@@ -188,6 +188,14 @@ def build_parser():
         default=20,
         help="cloud: seconds for listing each project's newest box sessions and their notes (default 20; 0 skips it)",
     )
+    s.add_argument(
+        "--push-check-timeout",
+        type=float,
+        default=5.0,
+        metavar="SECONDS",
+        help="developer machines: seconds in all for checking whether the box folders this machine owns changed "
+        "since its last push, offline (default 5; 0 skips it)",
+    )
     s.set_defaults(func=lazy("session", "cmd_session_start"))
 
     s = sub.add_parser("sync", parents=[common, timeout, dry], help="scan, commit, pull and push store changes")
@@ -204,8 +212,23 @@ def build_parser():
     s.add_argument("--url", action="append", metavar="URL", help="extra HTTPS GET check (repeatable)")
     s.set_defaults(func=lazy("probe", "cmd_probe"))
 
-    s = sub.add_parser("hook", parents=[common], help="handlers called by agent hooks (reads the hook JSON on stdin)")
-    s.add_argument("name", choices=["memory-write"])
+    s = sub.add_parser(
+        "hook",
+        parents=[common],
+        help="handlers called by agent hooks (read the hook JSON on stdin, always exit 0)",
+        description="memory-write: sync when the file just written is a store memory, skill or instruction file. "
+        "stop-check (cloud runtimes only; silent elsewhere): when the session's project clones hold files that are "
+        "in no git commit and not in the box (`box unsent`), print the Stop hook decision that asks the agent to "
+        "send each one or declare it disposable; never the same set twice, at most 3 times a session.",
+    )
+    s.add_argument("name", choices=["memory-write", "stop-check"])
+    s.add_argument(
+        "--time-limit",
+        type=float,
+        default=8.0,
+        metavar="SECONDS",
+        help="stop-check: seconds for checking every project clone (default 8; when it runs out, nothing is blocked)",
+    )
     s.set_defaults(func=lazy("hooks", "cmd_hook"))
 
     s = sub.add_parser("hooks", parents=[common, dry], help="install, uninstall or show the agent hooks")
@@ -413,6 +436,47 @@ def build_parser():
     b.add_argument(
         "--time-budget", type=float, default=30.0, metavar="SECONDS", help="time for all size walks (default 30)"
     )
+    b = box.add_parser(
+        "unsent",
+        parents=[common, proj],
+        help="list the files of the clone this session made or changed that are in no git commit and not in the box",
+        description="List the files of the project clone that are untracked or ignored by git, changed at or after "
+        "the session baseline (recorded by session-start), and persisted nowhere: not fetched from the box "
+        "unchanged, not sent in this session unchanged, not declared disposable with `box skip`, and not left out "
+        "by name (env files, links, .git, .agent-mirror, __pycache__, .venv, venv, node_modules, .cache, "
+        ".pytest_cache, .mypy_cache, .ruff_cache, .tox, .nox, nested git clones), box.exclude or "
+        "box.unsent_ignore. Grouped by top-level folder, largest first. Read-only and offline. Exit 0; with "
+        "--check, 3 when something is unsent or the check could not finish.",
+    )
+    b.add_argument("--json", action="store_true", help="print JSON")
+    b.add_argument(
+        "--check", action="store_true", help="exit 3 when files are unsent or the check could not finish, 0 when none"
+    )
+    b.add_argument(
+        "--time-limit",
+        type=float,
+        default=5.0,
+        metavar="SECONDS",
+        help="time for the whole check (default 5); a check cut short says so",
+    )
+    b = box.add_parser(
+        "skip",
+        parents=[common, timeout, proj, dry, transfer],
+        help="declare files or folders of the clone disposable for this session, with a reason",
+        description="Record that this session leaves these files or folders behind on purpose: in the local "
+        "session record (so `box unsent` and the stop check leave them out) and in the session manifest on the "
+        "box, as an entry of its `skipped` list with the reason, so later sessions see what was left behind and "
+        "why (`box sessions`, `box fetch --session`). When the box cannot be reached, it is recorded on this "
+        "machine only and the command says so. Paths must be inside the project clone.",
+    )
+    b.add_argument("paths", nargs="+", metavar="PATH", help="a file or folder inside the clone (repeatable)")
+    b.add_argument(
+        "--reason",
+        required=True,
+        metavar="TEXT",
+        help="why they can go (one line, up to 500 characters; text that looks like a secret is refused)",
+    )
+    b.add_argument("--label", metavar="TEXT", help="a short label for this session, set on first use (as box send)")
     b = box.add_parser("rclone-env", parents=[common], help="turn a local rclone remote into RCLONE_CONFIG_* variables")
     b.add_argument("--remote", required=True, metavar="NAME", help="the rclone remote name")
     b.add_argument("--out", metavar="FILE", help="write NAME=value lines to FILE (owner-only); otherwise names only")

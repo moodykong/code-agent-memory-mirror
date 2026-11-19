@@ -116,11 +116,11 @@ on the vendor's settings page.
 | `machine [--name NAME]` | show this machine's id, name and recorded choices, or set its name |
 | `uninstall` | remove the links into the store and restore the backups |
 | `doctor` | runtime, config, store state, every expected link, hooks, tools, box settings |
-| `session-start [--repair-timeout 900] [--box-timeout 20]` | pull the store; on a cloud runtime also update agent-mirror to the pinned ref, repair setup drift (run the setup steps again when the store changed them), dependency sync, project start commands, install and companion repo links; print the memory index path; on a cloud runtime list each project's newest box sessions with their notes and the shared folders that have notes; record each step's time and status in `<cache>/session-start.jsonl` |
+| `session-start [--repair-timeout 900] [--box-timeout 20] [--push-check-timeout 5]` | pull the store; on a cloud runtime also update agent-mirror to the pinned ref, repair setup drift (run the setup steps again when the store changed them, and add agent-mirror hooks the machine lacks), dependency sync, project start commands, install and companion repo links; record the session baseline in each project clone that has a box (what `box unsent` counts from); print the memory index path; on a cloud runtime list each project's newest box sessions with their notes and the shared folders that have notes; on a developer machine print one line per project whose box folders owned by this machine changed since its last push (offline); record each step's time and status in `<cache>/session-start.jsonl` |
 | `sync [--message MSG]` | adopt stray memory files (for projects this machine linked), secret scan, commit, `pull --rebase`, push (never force) |
 | `probe [--tcp HOST:PORT] [--url URL]`, `probe --full` | reachability and machine checks, and the last session-start's step times; `--full` is the long first-session report |
-| `hook memory-write` | hook handler: runs `sync` when the file just written is a store memory, skill or instruction file |
-| `hooks install\|uninstall\|status [--agent claude]` | add or remove the three Claude Code hooks in its user settings, keeping everything else |
+| `hook memory-write`, `hook stop-check [--time-limit 8]` | hook handlers: `memory-write` runs `sync` when the file just written is a store memory, skill or instruction file; `stop-check` (cloud runtimes only, silent elsewhere) asks the agent to send or leave behind the files `box unsent` lists before the turn ends; both always exit 0 |
+| `hooks install\|uninstall\|status [--agent claude]` | add or remove the Claude Code hooks in its user settings, keeping everything else: three on a developer machine, four on a cloud runtime (plus the Stop hook) |
 | `timer install\|uninstall\|status [--minutes 30]` | periodic `sync`: systemd user timer, launchd agent or Windows scheduled task |
 | `box push [--only FOLDER]... [--take-over [FOLDER]]... [--delete]` | upload the box folders this machine owns or claims; folders another machine owns are skipped with a note (same or different here) |
 | `box owners [--json]`, `box release FOLDER...` | list every folder of the box with its owning machine, its note and how the local copy compares (read-only); give up folders this machine owns (no data deleted) |
@@ -130,6 +130,8 @@ on the vendor's settings page.
 | `box sessions [--json] [--limit N]`, `box fetch --session ID [PATH] [--into DIR]` | list what earlier sessions produced, newest first, with their notes; print a session's notes and download its files (by id, unique start of the id, or label) into `_sessions/<id>/`; any runtime |
 | `box promote --session ID PATH [--as FOLDER]`, `box prune [--older-than DAYS] [--session ID]... [--keep-promoted] [--yes]` | developer machines: copy a session's file or folder into the shared tree, owned by this machine; delete old session namespaces (lists first, needs `--yes`) |
 | `box candidates [--json] [--min-bytes N]` | list the project's untracked and ignored entries with sizes and a kind guess, to choose what goes in the box; read-only |
+| `box unsent [--json] [--check] [--time-limit 5]` | list the files of the clone that this session made or changed and that are in no git commit and not in the box, grouped by top-level folder, largest first; offline and read-only; `--check` exits 3 when there are any (or the check could not finish) |
+| `box skip PATH... --reason TEXT [--label TEXT]` | declare files or folders of the clone disposable for this session: recorded locally (so `box unsent` leaves them out) and in the session manifest on the box, so later sessions see what was left behind and why |
 | `box ls [PATH]`, `box status`, `box evict PATH` | browse the box offline, see what was fetched here, delete fetched copies to free disk |
 | `box receive [--into DIR]` | download every session not received yet, one folder per session (developer machine) |
 | `box mount\|unmount [--cache-max-size 10G]` | rclone: mount the shared side read-only with a capped cache (needs FUSE) |
@@ -185,6 +187,27 @@ lists the newest sessions of each project with their notes. A rule worth adding 
 file: "a cloud agent gives a note with every `box send` and reads the notes (`box sessions`, `box ls`)
 before using files from the box". Details: "Notes" in [plugin/docs/project-config.md](plugin/docs/project-config.md).
 
+A cloud machine is thrown away after the session, so a file the session made and never sent is lost.
+`box unsent` lists the files of the clone that this session made or changed (since the baseline
+`session-start` records) and that are in no git commit and not in the box; for each one the agent either
+sends it (`box send PATH --label NAME --note "what, why, what next"`) or declares it disposable
+(`box skip PATH... --reason TEXT`, recorded in the session manifest so later sessions see what was left
+behind and why). On a Claude cloud machine a Stop hook runs the same check when the agent ends its turn and
+asks it to do one or the other, once per new set of files (Codex has no such hook: its instructions say to
+run `box unsent`). On a developer machine, `session-start` prints one line when box folders this machine owns
+changed since its last push. The rule for your instructions file (the template `AGENTS.md` has it):
+
+```
+- Before finishing a cloud session, run `agent-mirror box unsent`; for each file it lists, send it with
+  `agent-mirror box send PATH --label NAME --note "what, why, what next"`, or declare it disposable with
+  `agent-mirror box skip PATH... --reason "why it can go"`.
+- KEEP results that took real time or money to produce, analysis outputs, generated reports and figures,
+  anything a later session would otherwise have to redo. LEAVE caches, anything rebuildable in minutes,
+  files already in git, secrets and env files.
+```
+
+Details: "Unsent files" in [plugin/docs/project-config.md](plugin/docs/project-config.md).
+
 The older names of the two sides, inbound and outbound, still work in the config.
 Backends: `azure-blob` (through the Azure CLI, Azure AD sign-in only) and `rclone` (OneDrive, S3,
 Google Drive and many more).
@@ -238,6 +261,10 @@ owners" in [plugin/docs/reconciliation.md](plugin/docs/reconciliation.md).
   pattern, never the text).
   `box evict` deletes only files recorded as fetched from the box and unchanged since, and only on a
   cloud runtime unless you pass `--force`. `box rclone-env` never prints a secret value.
+- The Stop hook (`hook stop-check`) is installed on cloud runtimes only and does nothing anywhere else. It
+  reads only git and local files, never prints file contents, and never blocks on an error, on input it
+  cannot read, or when its check runs out of time (8 s); it blocks at most once per new set of unsent files
+  and at most 3 times a session, and keeps only short digests of the file names it blocked on.
 - `--dry-run` shows the exact commands, with secret values replaced by `***`.
 - `cloud render` writes a placeholder (`<STORE_REPO_TOKEN>`) where a token goes and drops any
   credentials found in the store's remote URL.

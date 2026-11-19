@@ -30,6 +30,7 @@ SAFE_HOST = re.compile(r"^[A-Za-z0-9.-]+(:[0-9]+)?$")
 SAFE_PROJECT = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._-]*$")
 BOOTSTRAP_SINCE = (0, 5, 2)  # the first agent-mirror with `cloud bootstrap`
 NOTES_SINCE = (0, 5, 3)  # the first agent-mirror with `box send --note` (the runbook's first-session prompt uses it)
+UNSENT_SINCE = (0, 5, 6)  # the first agent-mirror with `box unsent`, `box skip` and the Stop hook (stop-check)
 PYTHON_HOSTS = [
     "pypi.org",
     "files.pythonhosted.org",
@@ -324,6 +325,12 @@ def render_checked(ctx, store, project, vendors):
             "store.json pins agent-mirror %s, which has no `box send --note`: the runbook's first-session prompt "
             "uses it and stops there with an unknown-argument error. Pin %s or later in store.json tool.ref."
             % (store.tool_ref(), ".".join(str(x) for x in NOTES_SINCE))
+        )
+    if older_than_bootstrap(store.tool_ref(), UNSENT_SINCE):
+        warn(
+            "store.json pins agent-mirror %s, which has no `box unsent`, `box skip` or the Stop hook that asks a "
+            "Claude cloud session to send or leave behind its unsent files. Pin %s or later in store.json tool.ref "
+            "to get them." % (store.tool_ref(), ".".join(str(x) for x in UNSENT_SINCE))
         )
     for vendor in vendors:
         for w in recipes.coverage_warnings(env, vendor):

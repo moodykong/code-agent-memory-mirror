@@ -63,19 +63,31 @@ def kind_of(path, name):
     return "candidate", ""
 
 
-def git_entries(project):
+def git_entries(project, timeout=120):
     """[(relative path, 'untracked' or 'ignored')] from git status, or None when this is not a git repo."""
-    rc, top, _ = run(["git", "-C", project, "rev-parse", "--show-toplevel"], timeout=20)
+    state, found = git_status(project, timeout)
+    return found if state == "ok" else None
+
+
+def git_status(project, timeout=120):
+    """('ok', [(relative path, 'untracked' or 'ignored')]), ('not-git', None) or ('failed', why).
+
+    git reports a folder whose whole content is untracked or ignored as one entry. The listing never takes the
+    index lock (--no-optional-locks), so it never gets in the way of git commands running at the same time.
+    timeout bounds the status call (seconds).
+    """
+    rc, top, _ = run(["git", "-C", project, "rev-parse", "--show-toplevel"], timeout=min(20, max(1, timeout)))
     if rc != 0 or not top.strip():
-        return None
-    rc, text, _ = run(
-        ["git", "-C", project, "status", "--porcelain=v1", "-z", "--ignored", "--untracked-files=normal", "--", "."],
-        timeout=120,
+        return ("failed", "git did not answer in time") if rc is None else ("not-git", None)
+    rc, text, stderr = run(
+        ["git", "-C", project, "--no-optional-locks", "status", "--porcelain=v1", "-z", "--ignored"]
+        + ["--untracked-files=normal", "--", "."],
+        timeout=timeout,
     )
     if rc != 0:
-        return None
+        return "failed", (stderr or "git status failed").strip()
     found = []
-    prefix_rc, prefix, _ = run(["git", "-C", project, "rev-parse", "--show-prefix"], timeout=20)
+    prefix_rc, prefix, _ = run(["git", "-C", project, "rev-parse", "--show-prefix"], timeout=min(20, max(1, timeout)))
     prefix = prefix.strip() if prefix_rc == 0 else ""
     for tok in text.split("\0"):
         if len(tok) < 4 or tok[:2] not in ("??", "!!"):
@@ -86,7 +98,7 @@ def git_entries(project):
         path = path.rstrip("/")
         if path:
             found.append((path, "untracked" if tok[:2] == "??" else "ignored"))
-    return found
+    return "ok", found
 
 
 def ignore_rules(project, paths):
