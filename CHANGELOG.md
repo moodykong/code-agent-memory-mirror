@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.5
+
+- `doctor` on a cloud machine checks the links of that machine's own agent only. A Claude cloud machine is
+  set up with `install --agents claude`, so the Codex instructions link was reported as `MISSING` there.
+
 ## 0.5.4
 
 - `probe --full` shortens the `doctor` output to its last 40 lines; a link line that is not OK (MISSING,

@@ -140,6 +140,19 @@ class DoctorToolsTest(ToolTest):
         self.assertIn("MISSING az (needed by the box of demo)", out)
         self.assertIn("PROBLEM  az is not installed, and the azure-blob box of demo needs it", out)
 
+    def test_cloud_machine_checks_only_its_own_agents_links(self):
+        # a Claude cloud machine is set up with `install --agents claude`: no Codex link is expected there
+        rc, out = self.run_tool("doctor", env={"AGENT_RUNTIME": "claude-cloud"})
+        self.assertEqual(rc, 0, out)
+        self.assertIn("links for claude:", out)
+        self.assertNotIn(".codex", out)
+        rc, out = self.run_tool("doctor", env={"AGENT_RUNTIME": "codex-cloud"})
+        self.assertIn("links for codex:", out)
+        rc, out = self.run_tool("doctor", "--agent", "codex", env={"AGENT_RUNTIME": "claude-cloud"})
+        self.assertIn("links for codex:", out)
+        rc, out = self.run_tool("doctor")
+        self.assertIn("links for claude,codex:", out)
+
 
 class ProbeArchiveTest(ToolTest):
     def test_probe_full_fetches_and_evicts_the_smallest_archived_file(self):

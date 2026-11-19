@@ -141,7 +141,13 @@ def cmd_doctor(args, ctx):
         else:
             out("  git: not a git clone (sync needs one)")
     out("  CLAUDE.md: %s" % claude_md_state(store))
-    agents = [args.agent] if args.agent else list(AGENT_NAMES)
+    if args.agent:
+        agents = [args.agent]
+    elif runtime in CLOUD_RUNTIMES:
+        # a cloud machine is set up for its own agent only (cloud bootstrap runs install --agents <agent>)
+        agents = [runtime.split("-")[0]]
+    else:
+        agents = list(AGENT_NAMES)
     d = discover_projects(ctx, args.project, args.project_path)
     d.report()
     out("links for %s:" % ",".join(agents))
