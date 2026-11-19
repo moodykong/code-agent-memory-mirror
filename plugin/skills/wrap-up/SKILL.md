@@ -24,7 +24,7 @@ From the folder the session runs in:
 
 ```
 agent-mirror detect
-agent-mirror box unsent --all --json
+agent-mirror box unsent --all --json --time-limit 60
 ```
 
 `project` and `project_path` in the JSON name the project and its clone; work only there. When the session runs in a folder above several clones, add `--project <name>` to every `agent-mirror box` command.
@@ -37,10 +37,11 @@ agent-mirror box unsent --all --json
 ### 1. Look (read-only)
 
 ```
-agent-mirror box unsent --all
+agent-mirror box unsent --all --time-limit 60
 git status --short
 ```
 
+- The default 5 s limit of `box unsent` suits a stop check; a wrap-up can wait, so give it 60 s. If it still says the check was cut short, say so in the report.
 - `box unsent` lists the files of the clone made or changed since the session baseline it prints, in no git commit and not in the box: those for the box, then the small untracked files left to git. In the JSON from Scope, `entries` gives each one's `path`, `bytes`, `files`, `folder` and `class` (`for_the_box` or `left_to_git`). Older files are not listed; `git status --short` still shows them when untracked.
 - On a developer machine, also see which shared folders this machine owns and whether they changed since its last push:
 

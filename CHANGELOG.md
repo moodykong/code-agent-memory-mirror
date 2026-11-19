@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.10
+
+- The wrap-up skill gives `box unsent` 60 s (`--time-limit 60`). On a clone with several hundred thousand files
+  outside git, the JSON form stopped at the default 5 s limit in a real run.
+
 ## 0.5.9
 
 End of day on your own machine: the plugin skill `/agent-mirror:wrap-up`, and one link that makes the plugin's
