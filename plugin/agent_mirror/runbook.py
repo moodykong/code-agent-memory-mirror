@@ -34,18 +34,20 @@ PRODUCTS = {
     "codex": "Codex cloud (newer VM product and legacy container product)",
 }
 PROBE_COMMAND = (
-    "cd <clone> && agent-mirror probe --full > probe_output.txt 2>&1 && "
+    "cd <clone> && agent-mirror probe --full > probe_output.txt 2>&1; "
     'agent-mirror box send probe_output.txt --label first-probe --note "Report of agent-mirror probe --full from '
-    'the first session in this environment; read it before changing the cloud setup."'
+    'the first session in this environment; read it before changing the cloud setup."; '
+    "cat probe_output.txt; rm -f probe_output.txt"
 )
 
 
 def probe_prompt(project_repo):
-    """The first-session prompt: the report is written inside the project clone, then sent to the box."""
+    """The first-session prompt: the report is written inside the project clone, sent to the box, shown and
+    removed (a report left in the clone makes the vendor ask the session to commit it)."""
     return (
         "Run this command, with <clone> replaced by the folder of your clone of %s:\n%s\n"
-        "Then reply with the complete content of probe_output.txt in one code block, unchanged, followed by the "
-        "output of the box send. Do not do anything else." % (project_repo, PROBE_COMMAND)
+        "Then reply with the complete output of the command in one code block, unchanged. Do not do anything "
+        "else." % (project_repo, PROBE_COMMAND)
     )
 
 

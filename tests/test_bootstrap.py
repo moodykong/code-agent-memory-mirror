@@ -196,10 +196,12 @@ class RenderTest(ToolTest):
         book = json.loads(read(self.s("projects", "demo", "cloud", "claude", "runbook.json")))
         prompt = [s for s in book["steps"] if s["kind"] == "first-session"][0]["prompt"]
         self.assertIn(
-            "cd <clone> && agent-mirror probe --full > probe_output.txt 2>&1 && "
+            "cd <clone> && agent-mirror probe --full > probe_output.txt 2>&1; "
             "agent-mirror box send probe_output.txt --label first-probe --note ",
             prompt,
         )
+        # the report is shown and removed: one left in the clone makes the vendor ask the session to commit it
+        self.assertIn("; cat probe_output.txt; rm -f probe_output.txt", prompt)
         self.assertIn("your clone of Example/demo", prompt)
 
 

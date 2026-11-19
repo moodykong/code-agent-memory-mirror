@@ -261,3 +261,28 @@ class SelfUpdateTest(ToolTest):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProbeTailTest(unittest.TestCase):
+    """Shortening the doctor output in `probe --full` never hides a line that is not OK."""
+
+    def test_lines_that_are_not_ok_above_the_cut_are_printed(self):
+        import contextlib
+        import io
+        import sys
+
+        from agent_mirror import probe
+
+        lines = ["  MISSING    ~/x (install creates it)", "  OK         ~/a (symlink)"]
+        lines += ["  OK         ~/b%d (symlink)" % i for i in range(10)] + ["  summary: 1 MISSING, 11 OK"]
+        code = "print(%r)" % "\n".join(lines)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = probe.tail_run([sys.executable, "-c", code], 30, tail=3, also=probe.doctor_line_not_ok)
+        shown = buf.getvalue()
+        self.assertEqual(rc, 0)
+        self.assertIn("MISSING    ~/x", shown)
+        self.assertNotIn("~/a (symlink)", shown)
+        self.assertIn("summary: 1 MISSING, 11 OK", shown)
+        self.assertTrue(probe.doctor_line_not_ok("  NOT LINKED ~/y"))
+        self.assertFalse(probe.doctor_line_not_ok("  OK         ~/z"))

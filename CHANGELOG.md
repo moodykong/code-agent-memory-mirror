@@ -1,8 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.5.4
 
-Faster tests; no change to the program.
+- `probe --full` shortens the `doctor` output to its last 40 lines; a link line that is not OK (MISSING,
+  ELSEWHERE, NOT LINKED, COPY) or a PROBLEM above that cut is now printed too. Before, the summary could say
+  `1 MISSING` with the line itself cut away.
+- The runbook's first-session prompt shows the probe report and removes it after sending it. A report left in
+  the project clone made the vendor's stop hook ask the session to commit and push it.
+
+Faster tests; no change to the program otherwise.
 
 - **`python3 tests/run_parallel.py`** runs the suite in parallel: every test class in its own Python process
   (`--jobs N`, default the CPU count; `--split file`; `--timeout SECONDS`), each with its own temp folder,

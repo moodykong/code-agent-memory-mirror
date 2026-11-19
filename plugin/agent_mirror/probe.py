@@ -249,10 +249,11 @@ def section(title):
     out("===== %s =====" % title)
 
 
-def tail_run(argv, limit, tail=12, cwd=None, keep=None):
+def tail_run(argv, limit, tail=12, cwd=None, keep=None, also=None):
     """Run, print the last lines of the combined output and the exit code. Never raises.
 
-    keep, a list, receives the whole output.
+    keep, a list, receives the whole output. also, a function of a line, picks lines above the tail that
+    are printed too (first), so that shortening the output never hides a problem.
     """
     try:
         proc = subprocess.run(
@@ -272,10 +273,21 @@ def tail_run(argv, limit, tail=12, cwd=None, keep=None):
         text, rc = str(exc), "could not start"
     if keep is not None:
         keep.append(text)
-    for line in text.rstrip().splitlines()[-tail:]:
+    lines = text.rstrip().splitlines()
+    for line in [ln for ln in lines[:-tail] if also and also(ln)]:
+        out(line)
+    for line in lines[-tail:]:
         out(line)
     out("(exit %s)" % rc)
     return rc
+
+
+NOT_OK_LABELS = ("MISSING", "ELSEWHERE", "NOT LINKED", "COPY", "PROBLEM")
+
+
+def doctor_line_not_ok(line):
+    """A doctor line that reports something other than OK (a link that is missing, elsewhere, a copy, a problem)."""
+    return line.strip().startswith(NOT_OK_LABELS)
 
 
 def full_probe(args, ctx):
@@ -371,7 +383,7 @@ def full_probe(args, ctx):
         where = ["--project", d.matched[0][0], "--project-path", d.matched[0][1]]
     else:
         where = ["--project-path", d.start]
-    tail_run(self_argv(ctx, "doctor", *where), 60, tail=40)
+    tail_run(self_argv(ctx, "doctor", *where), 60, tail=40, also=doctor_line_not_ok)
 
     section("6 network")
     tail_run(self_argv(ctx, "probe", *where), 120, tail=25)

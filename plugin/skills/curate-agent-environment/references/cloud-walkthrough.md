@@ -47,8 +47,8 @@ First session prompt (the runbook's first-session step has it with the project r
 
 ```
 Run this command, with <clone> replaced by the folder of your clone of <owner>/<repo>:
-cd <clone> && agent-mirror probe --full > probe_output.txt 2>&1 && agent-mirror box send probe_output.txt --label first-probe --note "Report of agent-mirror probe --full from the first session in this environment; read it before changing the cloud setup."
-Then reply with the complete content of probe_output.txt in one code block, unchanged, followed by the output of the box send. Do not do anything else.
+cd <clone> && agent-mirror probe --full > probe_output.txt 2>&1; agent-mirror box send probe_output.txt --label first-probe --note "Report of agent-mirror probe --full from the first session in this environment; read it before changing the cloud setup."; cat probe_output.txt; rm -f probe_output.txt
+Then reply with the complete output of the command in one code block, unchanged. Do not do anything else.
 ```
 
 Read the output for:

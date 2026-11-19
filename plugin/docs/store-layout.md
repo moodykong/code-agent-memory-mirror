@@ -111,7 +111,7 @@ it is generated from the same data, and `agent-mirror cloud runbook --json` prin
     {"kind": "setup-script", "title": "...", "text": "...", "file": "setup.sh",
      "placeholders": [{"placeholder": "<STORE_REPO_TOKEN>", "secret": "STORE_REPO_TOKEN", "instructions": "..."}]},
     {"kind": "first-session", "title": "...", "text": "...",
-     "prompt": "Run this command, with <clone> replaced by ...:\ncd <clone> && agent-mirror probe --full > probe_output.txt 2>&1 && agent-mirror box send probe_output.txt --label first-probe --note \"Report of agent-mirror probe --full ...\"\n..."},
+     "prompt": "Run this command, with <clone> replaced by ...:\ncd <clone> && agent-mirror probe --full > probe_output.txt 2>&1; agent-mirror box send probe_output.txt --label first-probe --note \"Report of agent-mirror probe --full ...\"; cat probe_output.txt; rm -f probe_output.txt\n..."},
     {"kind": "cleanup", "title": "...", "text": "...", "items": ["delete the values file ...", "..."]}
   ]
 }
