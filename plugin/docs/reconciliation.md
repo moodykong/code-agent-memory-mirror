@@ -163,6 +163,9 @@ After a real apply (or install) on a developer runtime, a non-secret profile goe
   "projects": [{"project": "my-project", "path": "/home/you/code/my-project"}],
   "units": [ ... ],
   "ignored": [{"path": "~/.claude/skills/synced", "reason": "vendor-synced folder"}],
+  "plugin_link": {"path": "~/.claude/skills/agent-mirror", "target": "~/code-agent-memory-mirror/plugin",
+                  "state": "linked", "repairable": false, "points_to": "~/code-agent-memory-mirror/plugin",
+                  "note": null, "advice": null},
   "waiting": ["skill:alpha"],
   "fresh": false
 }
@@ -211,6 +214,12 @@ One unit:
 - `decision` and `decided_by` (`default`, `recorded` or `null`): what apply does without a choices file.
 - `waiting`: true when the unit needs a choice before apply touches it.
 - `fresh` is true when no unit waits for a choice. Units decided earlier on this machine count as settled.
+- `plugin_link` (since 0.5.9; `null` when Claude is not among the agents): the program's own link in Claude's
+  skills folder, which is never a unit. `state` is `linked`, `missing`, `other-checkout` (a link to another
+  agent-mirror checkout), `stale` (a link agent-mirror made to a checkout that is gone), `store-skill`,
+  `elsewhere`, `broken`, `folder`, `file`, `folder-link` (the skills folder is itself a link) or `unavailable`;
+  `repairable` is true for `missing`, `other-checkout` and `stale`, the states that `install` and `apply` change;
+  `note` says what is there and `advice` what to do.
 
 A choices file:
 
@@ -233,6 +242,8 @@ A choices file:
 - on a machine with units in `first-setup` or `reconcile`, applies only the units that need no decision,
   lists the units waiting for a choice and says to run `agent-mirror plan`;
 - converts a legacy whole-folder skills link;
+- for Claude, makes or repairs the plugin link `<claude home>/skills/agent-mirror` (store-layout.md, "Links
+  that `install` and `apply` make"); `apply` does the same unless `--only` is given;
 - with `--strict`, exits with code 4 and changes nothing when the machine is not fresh.
 
 On a cloud runtime, `session-start` does the same for the runtime's agent.

@@ -666,6 +666,7 @@ def cmd_owners(args, s, runtime, backend):
                 "here": here,
                 "local": local,
                 "files_here": sm["files"] if sm else 0,
+                "bytes_here": sm["bytes"] if sm else 0,
                 "note": (cur or {}).get("note") or None,
             }
         )

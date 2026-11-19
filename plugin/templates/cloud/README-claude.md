@@ -26,9 +26,11 @@ settings never means pasting it again.
 @@COMPANIONS_LINE@@
 @@PYTHON_LINE@@
 @@SETUP_LINE@@
-  - runs `agent-mirror init-store --adopt` (writes the user config), `install --agents claude` and
-    `hooks install` (session start, memory write and session end hooks in `~/.claude/settings.json`, and,
-    with agent-mirror 0.5.6 or later, the Stop hook that asks the session to send or leave behind the files
+  - runs `agent-mirror init-store --adopt` (writes the user config), `install --agents claude` (with
+    agent-mirror 0.5.9 or later it also links agent-mirror's own `plugin/` folder as
+    `~/.claude/skills/agent-mirror`, so its skills are `/agent-mirror:<skill>`) and `hooks install`
+    (session start, memory write and session end hooks in `~/.claude/settings.json`, and, with
+    agent-mirror 0.5.6 or later, the Stop hook that asks the session to send or leave behind the files
     `agent-mirror box unsent` lists before it ends; since 0.5.7 only the files for the box, while small
     untracked files are left to the vendor's own hook that asks to commit them);
   - records a stamp of those setup inputs and the agent-mirror commit on the machine
@@ -55,6 +57,8 @@ settings never means pasting it again.
 - A machine built before agent-mirror 0.5.6 has no Stop hook. Its session start adds it (and says so), but
   the cached machine keeps the old settings, and a hook added during a session may only be used from a later
   session: pin 0.5.6 or later in `store.json` and raise the `# revision:` line once to rebuild the machine.
+- A machine built before agent-mirror 0.5.9 has no plugin link. Its session start adds it (step
+  `plugin link check`, which never fails the session); Claude Code may only load it from a later session.
 - Every session start ends with each project's newest box sessions and their notes, and the shared folders
   that have notes, within `session-start --box-timeout` (20 s by default); it prints one line when it cannot
   list. `box send` in a cloud session needs `--note "<what these files are and why>"`; pin agent-mirror

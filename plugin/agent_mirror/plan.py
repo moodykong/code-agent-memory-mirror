@@ -25,9 +25,9 @@ import json
 import os
 import time
 
-from agent_mirror import PLUGIN_ROOT, __version__, machine
+from agent_mirror import PLUGIN_ROOT, __version__, machine, pluginlink
 from agent_mirror.config import config_agents, config_projects, load_user_config
-from agent_mirror.install import active_copies, memory_link_path
+from agent_mirror.install import active_copies, load_manifests, memory_link_path
 from agent_mirror.links import is_junction, is_linklike, link_target, resolve_problem
 from agent_mirror.runtime import CLOUD_RUNTIMES, detect_runtime, parse_agents
 from agent_mirror.box.rules import include_prefix  # noqa: F401 (kept importable from here)
@@ -257,7 +257,10 @@ class Plan:
         self.recorded = machine.choices(self.cfg)
         self.mid, self.mname = machine.identity(self.cfg)
         self.runtime = detect_runtime()
-        self.copies = active_copies(self.plat)
+        manifests = load_manifests(self.plat)
+        self.copies = active_copies(self.plat, manifests)
+        # the tool's own link in Claude's skills folder (pluginlink.py): never a skill unit
+        self.plugin_link = pluginlink.plan_info(self.plat, self.store, manifests) if "claude" in self.agents else None
         self.units = []
         self.ignored = []
         self.places = {}  # unit id -> [Place]
@@ -450,6 +453,15 @@ class Plan:
     def skills_folder_units(self):
         self._folders = self.skill_folders()
 
+    def tool_link_at(self, label, name):
+        """True when this place holds the tool's plugin link (pluginlink.py), which is never a skill."""
+        return (
+            label == "claude"
+            and name == pluginlink.NAME
+            and self.plugin_link is not None
+            and self.plugin_link["state"] in pluginlink.TOOL_LINK
+        )
+
     def skill_units(self):
         folders = self._folders
         names = set(n for n in self.store.skill_names() if n != VENDOR_SKILLS)
@@ -461,6 +473,8 @@ class Plan:
                 continue
             for e in entries:
                 reason = None
+                if self.tool_link_at(label, e.name):
+                    continue  # reported on its own line (plugin_link), not as a skill
                 if e.name == VENDOR_SKILLS:
                     reason = "vendor-synced folder"
                 elif e.name.startswith("."):
@@ -486,10 +500,20 @@ class Plan:
     def skill_unit(self, name, folders):
         uid = "skill:%s" % name
         expected = self.store.path("skills", name)
-        places = [self.probe(label, os.path.join(folder, name), expected, "skill") for label, folder in folders]
+        held = [folder for label, folder in folders if self.tool_link_at(label, name)]
+        places = [
+            self.probe(label, os.path.join(folder, name), expected, "skill")
+            for label, folder in folders
+            if folder not in held
+        ]
         store_side, store_sum = self.store_side(expected, "skill")
         store_side["path"] = "skills/%s" % name
-        self.combine(uid, "skill", name, places, store_side, store_sum)
+        u = self.combine(uid, "skill", name, places, store_side, store_sum)
+        for folder in held:
+            u["note"] = (u["note"] + "; " if u["note"] else "") + (
+                "not linked in %s: the agent-mirror plugin link holds that name there (rename the skill to use it in "
+                "Claude Code)" % tilde(folder)
+            )
 
     def combine(self, uid, kind, name, places, store_side, store_sum, extra=None):
         """Turn the places and the store side into one unit with its case."""
@@ -781,6 +805,7 @@ class Plan:
             "projects": [{"project": n, "path": p} for n, p in self.projects],
             "units": [dict((k, v) for k, v in u.items() if not k.startswith("_")) for u in self.units],
             "ignored": self.ignored,
+            "plugin_link": pluginlink.plan_data(self.plugin_link) if self.plugin_link else None,
             "waiting": [u["id"] for u in self.waiting()],
             "fresh": self.fresh(),
         }
@@ -995,6 +1020,8 @@ def print_plan(plan):
         out("decided earlier on this machine: %s" % ", ".join("%s=%s" % (u["id"], u["decision"]) for u in decided))
     if data["ignored"]:
         out("not skills (left alone): %s" % ", ".join("%s (%s)" % (i["path"], i["reason"]) for i in data["ignored"]))
+    if plan.plugin_link:
+        out(pluginlink.plan_line(plan.plugin_link))
     out("")
     waiting = plan.waiting()
     if not waiting:

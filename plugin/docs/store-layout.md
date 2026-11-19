@@ -158,8 +158,9 @@ on Linux; `agent-mirror debug paths` prints them). Developer machines write `ses
 
 ## Links that `install` and `apply` make
 
-All links point from a home folder into the store, never the other way. Which units get linked on a
-machine is decided per unit (see reconciliation.md); `install` links every unit that needs no decision.
+All links point from a home folder into the store, never the other way, except the plugin link (the last
+row). Which units get linked on a machine is decided per unit (see reconciliation.md); `install` links every
+unit that needs no decision.
 
 | Link | Target | For |
 | --- | --- | --- |
@@ -168,6 +169,23 @@ machine is decided per unit (see reconciliation.md); `install` links every unit 
 | `~/.agents/skills/<name>` | `skills/<name>` | Codex and other agents that read shared skills, one link per store skill |
 | `<claude home>/skills/<name>` | `skills/<name>` | Claude Code, one link per store skill |
 | `<claude home>/projects/<slug>/memory` | `memory/<memory_project>/` | Claude Code, per project |
+| `<claude home>/skills/agent-mirror` | the `plugin/` folder of the agent-mirror checkout that ran `install` (not the store) | Claude Code: the plugin skills, `/agent-mirror:<skill>` (since 0.5.9) |
+
+The plugin link belongs to the program, not to the store, and is never a unit of the plan. Claude Code loads
+a folder (or a link to one) in its skills folder that holds `.claude-plugin/plugin.json` as a skills-directory
+plugin, `<manifest name>@skills-dir`, and names its skills after the manifest's `name`: `agent-mirror`, so
+`/agent-mirror:wrap-up`. `install` and `apply` (for Claude, without `--only`) create it, relink it when it
+points at another agent-mirror checkout (also one from before the plugin was renamed) or at a checkout it
+linked earlier that is gone,
+and record it in the manifest (`"kind": "plugin-link"`); `cloud bootstrap` runs `install`, and a cloud
+`session-start` adds it in its step `plugin link check` on a machine built before 0.5.9 (never failing the
+session). `doctor` lists it as `OK`, `MISSING`, `ELSEWHERE` or `NOT LINKED`, `plan` prints one line for it
+(and `plugin_link` in `--json`), and `uninstall` removes it. Anything else at that path (a real folder, a link
+elsewhere, a broken link agent-mirror did not make, a store skill named `agent-mirror`) is left alone, and
+`doctor`, `plan` and `install` say what it is and what to do; a store skill of that name keeps its links, and
+when the plugin link holds the name first, that skill is linked in `~/.agents/skills` only. A copy of the plugin
+would go stale, so when no link can be made (a symlink fails, and on Windows a junction too) nothing is made
+and `install` says why. No link is made for Codex: its manifest only carries the same name.
 
 A whole skills folder is never replaced by one link. (Versions before 0.3.0 linked `~/.agents/skills`
 as a whole; `plan` reports that as `skills-folder`, case `legacy-folder-link`, and `install` or `apply`

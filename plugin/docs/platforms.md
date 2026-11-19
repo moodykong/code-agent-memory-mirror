@@ -157,6 +157,12 @@ format is from a real Windows 11 machine.
     copy as `linked`, and as out of date once the store's file changed; `install` and `apply` then
     refresh it.
 - `install` prints which method it used for each link, and the manifest records it.
+- The plugin link (`<claude home>/skills/agent-mirror` to the program's own `plugin/` folder, since 0.5.9) is
+  a folder link: a symlink, else on Windows a junction, never a managed copy (a copy would go stale). When
+  neither can be made, `install` reports the error and makes nothing. Junction creation for it is tested with
+  a simulated symlink failure; Claude Code loading the plugin through a junction is UNVERIFIED (through a
+  symlink it was seen on Linux, Claude Code 2.1.328). Codex gets no plugin link: its manifest
+  (`plugin/.codex-plugin/plugin.json`) only carries the same name.
 
 Verified by test on Windows 11 (Python 3.11): junction creation through `cmd /c mklink /J`, junction
 detection (reparse tags on Python 3.11), reading the target (without the `\\?\` prefix Windows adds) and
@@ -291,6 +297,10 @@ Linux against local bare repos (skipped where bash or `timeout` is missing, so o
 real cloud machine the bootstrap and the drift repair are UNVERIFIED. The drift repair stops a command
 that runs out of time together with everything it started (a process group on Linux and macOS,
 `taskkill /T` on Windows).
+
+Since 0.5.9 `cloud bootstrap` (through `install`) also makes the plugin link for Claude, and a cloud
+`session-start` makes it on a machine built before (step `plugin link check`, after `hooks check`; local file
+operations only, logged, never failing the session). On a real cloud machine both are UNVERIFIED.
 
 ## Claude Code on the web: what a real session showed
 

@@ -361,6 +361,13 @@ checks. Neither `--delete` mode removes `_owners.json`, and `--delete` deletes o
 push carries. The fingerprint, the old single-writer marker (`_writer.json`) and a worked example with two
 machines: reconciliation.md, "Folder owners".
 
+`box owners --json` prints `project`, `source` (`box`, or `index` when the transfer program is missing or the
+read failed), `legacy_writer` and one row per folder in `folders`: `folder`, `owner` (the entry above, or
+`null`), `mine` (this machine owns it), `here`, `local` (`same`, `different`, `fetched`, `unknown`, `absent` or
+`unowned`), `files_here`, `bytes_here` (since 0.5.9: the size of the copy here, an upper bound for what a push
+of it uploads; computed from the same walk, no extra remote call) and `note`. The wrap-up skill reads it to
+find the folders this machine owns that changed since its last push.
+
 ### What could go in the box (`box candidates`)
 
 `agent-mirror box candidates --project NAME --project-path PATH [--json] [--min-bytes N]` is a
@@ -804,6 +811,18 @@ seconds (default 5; 0 skips it). When the time runs out, a folder still counts a
 so far is newer than its last push (a sound but partial signal: it misses deletions); when none was found,
 it prints one short line (`box of demo: the check of this machine's box folders stopped after 5 s; ...`).
 The step is in the session-start log as `box push check (<project>)`.
+
+**At the end of the day on a developer machine**, the plugin skill `/agent-mirror:wrap-up` (Claude Code; see
+the README, "End of day on your own machine") does by hand what the stop check asks for on a cloud machine,
+for the current project: it reads `box unsent --all --json`, `git status --short` and `box owners --json`,
+sends what is worth keeping (`box send` with a label and a note) and skips the rest (`box skip` with a
+reason), commits small files left to git by the project's own rules (never pushing them unless told to),
+pushes with `box push --project NAME --only FOLDER` the folders this machine owns that changed (`mine` true,
+`local` `different` or `unknown`; never folders nobody owns, which a push would claim), runs `sync`, and
+reports what went where. A file inside a folder this machine owns is left to that push, not sent. It asks
+before an upload above 1 GiB, never deletes files and never changes ownership. With `preview` or `dry run` in
+its arguments it runs only read-only commands. The skill is plain instructions to the agent; a test parses
+every `agent-mirror` command line it quotes with the program's own parser.
 
 ### `box receive`
 

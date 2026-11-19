@@ -436,13 +436,22 @@ def write_machine_profile(ctx, plan, dry_run):
     return machine.write_profile(plan.store, machine.profile_data(ctx.plat, after.data(), mid, name))
 
 
-def apply_plan(ctx, plan, dry_run, label, choices=None, only=None, yes_defaults=False, installer=None):
-    """Apply a plan; returns (exit code, Applier)."""
+def apply_plan(
+    ctx, plan, dry_run, label, choices=None, only=None, yes_defaults=False, installer=None, plugin_link=True
+):
+    """Apply a plan; returns (exit code, Applier). plugin_link=False leaves the plugin link to the caller (a cloud
+    session start makes it in a step of its own that never fails the session)."""
     if not dry_run:
         machine.ensure(ctx.plat)
     ap = Applier(ctx, plan, dry_run, installer=installer)
     todo = ap.decide(choices, only, yes_defaults)
     ap.run(todo)
+    if plugin_link and "claude" in plan.agents and not only:
+        # the tool's own link in Claude's skills folder, after the skill units (a store skill of that name keeps
+        # its place) and after a legacy skills folder link was converted; never a unit to choose
+        from agent_mirror import pluginlink
+
+        pluginlink.ensure(ap.inst, dry_run)
     rc = ap.finish(label)
     ap.report(label)
     return rc, ap

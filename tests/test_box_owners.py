@@ -146,6 +146,9 @@ class OwnersMixin:
         self.assertEqual(rows["ws-b1"]["local"], "same")
         self.assertTrue(rows["ws-b1"]["mine"])
         self.assertFalse(rows["ws-a1"]["here"])
+        # 0.5.9: the size here, so that the wrap-up skill can say how large a push may be before it runs
+        self.assertEqual((rows["ws-b1"]["files_here"], rows["ws-b1"]["bytes_here"]), (1, len(b"b one\n")))
+        self.assertEqual(rows["decompile/binaries-1.0"]["bytes_here"], 0)
         rc, out = self.run_on(self.b, "box", "owners")
         self.assertRegex(out, r"decompile/proj-diff +desk-a since \S+ +here: yes +local vs owner: different")
 

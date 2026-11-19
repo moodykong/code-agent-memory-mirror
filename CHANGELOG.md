@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.5.9
+
+End of day on your own machine: the plugin skill `/agent-mirror:wrap-up`, and one link that makes the plugin's
+skills available in Claude Code.
+
+- **The plugin is named `agent-mirror`** (it was `code-agent-memory-mirror`) in `plugin/.claude-plugin/plugin.json`,
+  `plugin/.codex-plugin/plugin.json` and the plugin entry of `.claude-plugin/marketplace.json`, so its skills are
+  `/agent-mirror:<skill>`. The repository and the marketplace keep the name `code-agent-memory-mirror`: the
+  marketplace install is now `/plugin install agent-mirror@code-agent-memory-mirror`.
+- **The plugin link.** `install` and `apply` (for Claude; `apply` not with `--only`) link
+  `<claude home>/skills/agent-mirror` to the `plugin/` folder of the checkout that runs them. Claude Code loads a
+  folder in its skills folder that holds `.claude-plugin/plugin.json` as a skills-directory plugin named by the
+  manifest (`agent-mirror@skills-dir` in `claude plugin list`). The link is recorded in the backup manifest
+  (`"kind": "plugin-link"`), relinked when it points at another agent-mirror checkout (also one from before the
+  rename) or at one it made that is gone, and removed by `uninstall`. It is a symlink, else on Windows a junction,
+  never a copy (a copy goes stale): when no link can be made, `install` says why and exits 1. Anything else at
+  that path (a real folder or file, a link elsewhere, a broken link agent-mirror did not make, a store skill named
+  `agent-mirror`, a skills folder that is itself a link) is left alone, and the message says what is there and
+  what to do. `doctor` lists the link with the other links (`OK`, `MISSING`, `ELSEWHERE`, `NOT LINKED`) and says
+  what it enables; `plan` prints one line for it, and `plugin_link` in `--json`. It is never a skill unit: never
+  `external`, never a machine-only skill, never waiting for a choice. A store skill named `agent-mirror` keeps its
+  links; when the plugin link holds the name first, that skill is linked in `~/.agents/skills` only, with a note.
+- **Cloud machines.** `cloud bootstrap` makes the link (it runs `install`). A cloud `session-start` for Claude
+  makes it on a machine built before it existed, in a new step `plugin link check` after `hooks check`: local file
+  operations only, logged in the step log, never failing the session (the `linking` step leaves the link to it).
+  Codex gets no link; its manifest only carries the new name.
+- **The skill `wrap-up`** (`plugin/skills/wrap-up/SKILL.md`), for the end of a day on a developer machine, where
+  no stop hook asks about unsent files. For the current project it runs `box unsent --all --json`,
+  `git status --short` and `box owners --json`; sends what is worth keeping (`box send` with a label and a note)
+  and skips the rest (`box skip` with a reason) by the keep and leave rules, leaving a file inside a folder this
+  machine owns to the push; commits small files left to git by the project's own commit rules (never pushing
+  them unless told to); pushes the folders this machine owns that changed (`box push --project NAME --only
+  FOLDER`, never claiming a folder nobody owns); runs `sync`; and reports under fixed headings what was sent,
+  skipped, committed, pushed and left as it is. It asks before an upload above 1 GiB on a developer machine,
+  never deletes files and never changes the box's settings or ownership. With `preview` or `dry run` it runs
+  only read-only commands. A test parses every `agent-mirror` command line the skill quotes with the program's
+  own parser, and checks that none of them takes over, deletes or forces anything.
+- **`box owners --json`** rows have `bytes_here`, the size of the copy here, from the same walk as `files_here`,
+  so the wrap-up can say how large a push may be before it runs.
+
+What an existing machine runs once: on a developer machine, after updating the checkout,
+`agent-mirror install` (it makes the link and, as before, changes only units that need no decision; run
+`agent-mirror plan` first to see them), then `agent-mirror doctor` shows the link as `OK`. The skills appear in
+the next Claude Code session. If the plugin was also installed from the marketplace under the old name, remove
+that copy (`/plugin uninstall code-agent-memory-mirror@code-agent-memory-mirror`). A cloud machine needs nothing:
+with `tool.ref` at 0.5.9 or later in `store.json`, its next session start makes the link; raise the
+`# revision:` line of the pasted setup script once so that the vendor's cached machine has it from the start.
+
+Compatibility: stores and records of 0.5.2 to 0.5.8 are read as before, old pasted setup scripts and old
+snapshots keep working, and the transfer calls of every command are unchanged. Install manifests gain entries
+of the new kind; an older version's `uninstall` leaves the plugin link in place. On a developer machine nothing
+else changes.
+
 ## 0.5.8
 
 - `box unsent` and the stop check name the file when a folder holds a single unsent file

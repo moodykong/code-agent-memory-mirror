@@ -17,10 +17,13 @@ memory written on one machine never reaches the others. This plugin carries it.
 2. **The program**, `agent-mirror` (this repo, `plugin/`): links the store into each agent's home
    folder, syncs it with git, moves bulk untracked files through a "box", renders cloud environment
    settings, and probes a cloud machine. Python 3.8+ standard library only; no bash needed.
-3. **The skill** (`plugin/skills/`): the interactive workflow for curating the store with an agent.
+3. **The plugin skills** (`plugin/skills/`): workflows for an agent, such as curating the store, joining a
+   machine, and the end-of-day wrap-up. `agent-mirror install` makes them available in Claude Code as
+   `/agent-mirror:<skill>`.
 
 Your project repos are never changed and never point at the store. Links only ever point from a home
-folder into the store.
+folder into the store, except one: the plugin link `~/.claude/skills/agent-mirror` points at the
+`plugin/` folder of the agent-mirror checkout that made it (see "End of day on your own machine").
 
 ## Quick start (Linux, macOS)
 
@@ -76,11 +79,16 @@ README it writes under `projects/my-project/cloud/`. The setup script is pasted 
 (with a read-only store token); later changes to env.json or to the pinned agent-mirror version reach the
 cloud machine at the next session start. Select the store repo next to the project in every session.
 
-The skill: in Claude Code, `/plugin marketplace add moodykong/code-agent-memory-mirror`, then
-`/plugin install code-agent-memory-mirror@code-agent-memory-mirror`. The Codex manifest is
-`plugin/.codex-plugin/plugin.json`. Installing the plugin does not register any hooks by itself:
-hooks commit and push your store, so they start only when you run `agent-mirror hooks install`
-(which is also what the cloud setup scripts do).
+The plugin is named `agent-mirror` (the repository keeps its name). `agent-mirror install` links it into
+Claude Code (see "End of day on your own machine"); that link is the way on a machine with the program, so
+remove a copy installed from the marketplace there (what Claude Code does with two copies of one plugin is
+UNVERIFIED). Without the program, install it from the marketplace:
+`/plugin install agent-mirror --marketplace moodykong/code-agent-memory-mirror` (Claude Code 2.1.275 or later),
+or `/plugin marketplace add moodykong/code-agent-memory-mirror` and then
+`/plugin install agent-mirror@code-agent-memory-mirror`. The Codex manifest is
+`plugin/.codex-plugin/plugin.json`, with the same name; agent-mirror makes no link for Codex. Installing
+the plugin does not register any hooks by itself: hooks commit and push your store, so they start only when
+you run `agent-mirror hooks install` (which is also what the cloud setup scripts do).
 
 ## Join a second machine
 
@@ -104,6 +112,34 @@ environment, a key vault, a constant, or something only you can create) and says
 needs. `cloud secrets --out FILE` then writes the values to an owner-only file outside any repo, to paste
 on the vendor's settings page.
 
+## End of day on your own machine
+
+A developer machine has no stop hook, so nothing asks about the files a day of work left outside git and
+the box. Before you leave, in Claude Code, in the project:
+
+```
+/agent-mirror:wrap-up
+/agent-mirror:wrap-up preview        # changes nothing, says what it would do ("dry run" works too)
+```
+
+The skill runs `agent-mirror box unsent` for the current project and decides each listed file by the keep
+and leave rules (see "The box"): what is worth keeping goes to the box (`box send` with a label and a note),
+the rest is declared disposable (`box skip` with a reason). It commits small files that belong in git by the
+project's own commit rules and never pushes those commits unless your instructions say so, pushes the shared
+folders this machine owns when they changed (`box push --only`), runs `agent-mirror sync`, and ends with a
+short list: sent, skipped, committed, pushed, left as it is. It asks before an upload above 1 GiB, and it never
+deletes files or changes who owns a box folder.
+
+The plugin skills reach Claude Code through one link: `agent-mirror install` (and `apply`) links
+`~/.claude/skills/agent-mirror` to the `plugin/` folder of this checkout. Claude Code loads such a folder as a
+skills-directory plugin (`agent-mirror@skills-dir` in `claude plugin list`), named by its manifest, so each skill
+in `plugin/skills/` is `/agent-mirror:<skill>`, from the next session on, always at the version of the program
+that made the link. `agent-mirror doctor` and `plan` show the link; on a machine set up before 0.5.9, run
+`agent-mirror install` once. Something else at that path (a folder, another link, a store skill named
+`agent-mirror`) is never replaced: `doctor` says what is there and what to do. `uninstall` removes the link.
+Cloud machines get it from `cloud bootstrap`, and a cloud session start adds it to a machine built before it
+existed. Codex has no plugin link.
+
 ## Commands
 
 | Command | What it does |
@@ -112,18 +148,18 @@ on the vendor's settings page.
 | `init-store PATH [--remote URL] [--adopt] [--commit]` | make a store from the template (git init), or adopt an existing store folder; writes the user config |
 | `plan [--agents claude,codex] [--project NAME --project-path PATH]... [--json]` | compare this machine with the store unit by unit: `first-setup`, `join`, `reconcile`, `identical`, `nothing`, `linked`; read-only |
 | `apply [--choices FILE] [--only UNIT_ID ...] [--yes-defaults] [--dry-run]` | apply one action per unit (from the choices file, a recorded choice, or the default); units that need a choice wait |
-| `install [--agents claude,codex] [--project NAME --project-path PATH] [--memory-dir PATH] [--strict]` | for a fresh machine: apply every unit that needs no decision and list the rest (`--strict`: exit 4, change nothing, when the machine is not fresh) |
+| `install [--agents claude,codex] [--project NAME --project-path PATH] [--memory-dir PATH] [--strict]` | for a fresh machine: apply every unit that needs no decision and list the rest (`--strict`: exit 4, change nothing, when the machine is not fresh); for Claude also the plugin link (`apply` makes it too) |
 | `machine [--name NAME]` | show this machine's id, name and recorded choices, or set its name |
-| `uninstall` | remove the links into the store and restore the backups |
-| `doctor` | runtime, config, store state, every expected link, hooks, tools, box settings |
-| `session-start [--repair-timeout 900] [--box-timeout 20] [--push-check-timeout 5]` | pull the store; on a cloud runtime also update agent-mirror to the pinned ref, repair setup drift (run the setup steps again when the store changed them, and add agent-mirror hooks the machine lacks), dependency sync, project start commands, install and companion repo links; record the session baseline in each project clone that has a box (what `box unsent` counts from); print the memory index path; on a cloud runtime list each project's newest box sessions with their notes and the shared folders that have notes; on a developer machine print one line per project whose box folders owned by this machine changed since its last push (offline); record each step's time and status in `<cache>/session-start.jsonl` |
+| `uninstall` | remove the links into the store and the plugin link, and restore the backups |
+| `doctor` | runtime, config, store state, every expected link (and the plugin link), hooks, tools, box settings |
+| `session-start [--repair-timeout 900] [--box-timeout 20] [--push-check-timeout 5]` | pull the store; on a cloud runtime also update agent-mirror to the pinned ref, repair setup drift (run the setup steps again when the store changed them, add agent-mirror hooks the machine lacks, and for Claude the plugin link), dependency sync, project start commands, install and companion repo links; record the session baseline in each project clone that has a box (what `box unsent` counts from); print the memory index path; on a cloud runtime list each project's newest box sessions with their notes and the shared folders that have notes; on a developer machine print one line per project whose box folders owned by this machine changed since its last push (offline); record each step's time and status in `<cache>/session-start.jsonl` |
 | `sync [--message MSG]` | adopt stray memory files (for projects this machine linked), secret scan, commit, `pull --rebase`, push (never force) |
 | `probe [--tcp HOST:PORT] [--url URL]`, `probe --full` | reachability and machine checks, and the last session-start's step times; `--full` is the long first-session report |
 | `hook memory-write`, `hook stop-check [--time-limit 8]` | hook handlers: `memory-write` runs `sync` when the file just written is a store memory, skill or instruction file; `stop-check` (cloud runtimes only, silent elsewhere) asks the agent to send or leave behind the files `box unsent` lists for the box before the turn ends (small untracked files are left to git) and logs each run in `<cache>/stop-check.log`; both always exit 0 |
 | `hooks install\|uninstall\|status [--agent claude]` | add or remove the Claude Code hooks in its user settings, keeping everything else: three on a developer machine, four on a cloud runtime (plus the Stop hook) |
 | `timer install\|uninstall\|status [--minutes 30]` | periodic `sync`: systemd user timer, launchd agent or Windows scheduled task |
 | `box push [--only FOLDER]... [--take-over [FOLDER]]... [--delete]` | upload the box folders this machine owns or claims; folders another machine owns are skipped with a note (same or different here) |
-| `box owners [--json]`, `box release FOLDER...` | list every folder of the box with its owning machine, its note and how the local copy compares (read-only); give up folders this machine owns (no data deleted) |
+| `box owners [--json]`, `box release FOLDER...` | list every folder of the box with its owning machine, its note and how the local copy compares (`--json` also gives its file count and size here; read-only); give up folders this machine owns (no data deleted) |
 | `box note FOLDER TEXT`, `box note FOLDER --clear` | developer machines: the folder's owning machine sets or clears a one-line note on a shared folder (in `_owners.json`; `box owners`, `box ls` and a cloud session start show it) |
 | `box index`, `box fetch PATH [--all]` | list the shared tree into the store (with owners and a session summary), fetch on demand; Azure blob storage or any rclone remote |
 | `box send PATH [--note TEXT] [--archive] [--label TEXT] [--new-session]` | upload results into this session's own namespace on the sessions side, recorded in its manifest with the note (what the files are and why; required on a cloud runtime); PATH is relative to the project folder, else to the current folder, and a file outside the project is sent under its file name |
@@ -236,7 +272,9 @@ owners" in [plugin/docs/reconciliation.md](plugin/docs/reconciliation.md).
 - `sync` scans changed files for key-shaped strings and refuses to commit if it finds any. It prints
   file and pattern names only, never the matched text.
 - Links only point from a home folder into the store. `install` refuses a link whose target is outside
-  the store, a link that would sit inside the store, and link loops. `init-store` refuses a store inside
+  the store, a link that would sit inside the store, and link loops. The one exception is the plugin link
+  (`~/.claude/skills/agent-mirror` to the program's own `plugin/` folder): it is a link, never a copy, and it
+  never replaces anything agent-mirror did not make. `init-store` refuses a store inside
   a project repo, inside this program, or inside an agent home folder.
 - Nothing is deleted without a backup: anything a link replaces is moved to
   `~/.agent-mirror-backups/<timestamp>/` with a manifest that `uninstall` uses to put it back.

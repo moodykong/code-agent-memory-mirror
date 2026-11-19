@@ -10,7 +10,8 @@ memory link), and links to the project's companion repos. Always prints the
 memory index path. On a cloud runtime it ends with each project's newest box
 sessions and their notes, and the shared folders that have notes (box/notes.py;
 bounded by --box-timeout); on a cloud runtime for Claude it also adds hooks the
-machine lacks (the Stop hook on a machine set up before it existed). On every
+machine lacks (the Stop hook on a machine set up before it existed) and makes the
+plugin link in Claude's skills folder when it is missing (pluginlink.py). On every
 runtime it records the session baseline in each project clone that has a box
 (box/unsent.py; what `box unsent` and the stop check count from). On a developer
 machine it ends with one line per project whose box folders owned by this machine
@@ -164,6 +165,9 @@ def _session_start(args, ctx, store, runtime, log):
             from agent_mirror.hooks import repair_missing
 
             repair_missing(ctx, runtime, args.dry_run, log)  # a machine set up before the Stop hook existed
+            from agent_mirror.pluginlink import repair as repair_plugin_link
+
+            repair_plugin_link(ctx, runtime, args.dry_run, log)  # a machine set up before the plugin link existed
     d = discover_projects(ctx, args.project, args.project_path)
     d.report()
     rc = 0
@@ -193,7 +197,8 @@ def _session_start(args, ctx, store, runtime, log):
             projects.append(parent)
         with log.step("linking") as st:
             plan = Plan(ctx, [agent], projects)
-            rc, _ = apply_plan(ctx, plan, args.dry_run, "install")
+            # the plugin link has its own step above ("plugin link check"), which never fails the session
+            rc, _ = apply_plan(ctx, plan, args.dry_run, "install", plugin_link=False)
             for project, path in d.matched:
                 link_companions(ctx.plat, project, path, store.load_env(project), args.dry_run)
             if rc != 0:

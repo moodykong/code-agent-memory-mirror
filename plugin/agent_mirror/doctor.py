@@ -3,16 +3,16 @@
 import os
 import shutil
 
-from agent_mirror import PLUGIN_ROOT, __version__, machine, recipes
+from agent_mirror import PLUGIN_ROOT, __version__, machine, pluginlink, recipes
 from agent_mirror.box import describe_box
 from agent_mirror.config import config_projects
 from agent_mirror.hooks import status_line
 from agent_mirror.inbox import held_summary, upstream_parts
-from agent_mirror.install import Installer, link_state, memory_link_path
+from agent_mirror.install import Installer, link_state, load_manifests, memory_link_path
 from agent_mirror.links import describe
 from agent_mirror.projects import discover_projects
 from agent_mirror.runtime import AGENT_NAMES, CLOUD_RUNTIMES, detect_runtime
-from agent_mirror.util import expand, git, git_refusal, is_git_toplevel, out, read_text, tilde, upstream
+from agent_mirror.util import expand, git, git_refusal, is_git_toplevel, norm, out, read_text, tilde, upstream
 
 
 def claude_md_state(store):
@@ -153,6 +153,10 @@ def cmd_doctor(args, ctx):
     out("links for %s:" % ",".join(agents))
     inst = Installer(ctx, dry_run=True)
     items = [(link, target) for link, target, _, _ in inst.planned_links(agents)]
+    plugin = pluginlink.plan_info(plat, store, load_manifests(plat)) if "claude" in agents else None
+    if plugin and plugin["state"] in pluginlink.TOOL_LINK:
+        # a store skill of the same name is not linked where the plugin link is (plan says so)
+        items = [(link, target) for link, target in items if norm(link) != norm(plugin["path"])]
     if "claude" in agents:
         projects = list(d.matched)
         parent = d.parent_link()
@@ -178,6 +182,10 @@ def cmd_doctor(args, ctx):
             label, note = "DECIDED", "%s: %s (recorded for this machine)" % (uid, choice)
         counts[label] = counts.get(label, 0) + 1
         out("  %-10s %s (%s)" % (label, tilde(link), note))
+    if plugin:
+        label, note = pluginlink.doctor_state(plugin)
+        counts[label] = counts.get(label, 0) + 1
+        out("  %-10s %s (%s)" % (label, tilde(plugin["path"]), note))
     out("  summary: " + ", ".join("%d %s" % (v, k) for k, v in sorted(counts.items())))
     checkouts = list(d.matched)  # (project, local path) pairs, for the box overlap warnings
     try:

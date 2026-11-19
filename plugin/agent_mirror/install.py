@@ -315,28 +315,33 @@ class Installer:
                 )
         return self.finish(agents, projects)
 
+    def write_manifest(self, agents, projects):
+        """Write this run's manifest when it changed anything (never in a dry run). Returns its path or None."""
+        if not (self.entries or self.merges or self.refreshed or self.replaced) or self.dry_run:
+            return None
+        os.makedirs(self.backup_root, exist_ok=True)
+        manifest = os.path.join(self.backup_root, MANIFEST)
+        data = {
+            "version": 1,
+            "tool": "agent-mirror",
+            "created": iso_now(),
+            "store": self.store.root,
+            "home": self.plat.home(),
+            "agents": list(agents),
+            "projects": [{"project": n, "path": p} for n, p in projects],
+            "entries": self.entries,
+            "merges": self.merges,
+            "refreshed": self.refreshed,
+            "store_replaced": self.replaced,
+            "restored_at": None,
+        }
+        with open(manifest, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2)
+            fh.write("\n")
+        return manifest
+
     def finish(self, agents, projects, label="install"):
-        manifest = None
-        if (self.entries or self.merges or self.refreshed or self.replaced) and not self.dry_run:
-            os.makedirs(self.backup_root, exist_ok=True)
-            manifest = os.path.join(self.backup_root, MANIFEST)
-            data = {
-                "version": 1,
-                "tool": "agent-mirror",
-                "created": iso_now(),
-                "store": self.store.root,
-                "home": self.plat.home(),
-                "agents": list(agents),
-                "projects": [{"project": n, "path": p} for n, p in projects],
-                "entries": self.entries,
-                "merges": self.merges,
-                "refreshed": self.refreshed,
-                "store_replaced": self.replaced,
-                "restored_at": None,
-            }
-            with open(manifest, "w", encoding="utf-8") as fh:
-                json.dump(data, fh, indent=2)
-                fh.write("\n")
+        manifest = self.write_manifest(agents, projects)
         changed = len([e for e in self.entries if e.get("method") != "mkdir" or e.get("converted")])
         changed += len(self.refreshed)
         if not changed and not self.errors:
@@ -444,6 +449,8 @@ def cmd_install(args, ctx):
 
 
 def cmd_uninstall(args, ctx):
+    from agent_mirror import pluginlink
+
     dry = args.dry_run
     p = ctx.plat
     if dry:
@@ -451,6 +458,8 @@ def cmd_uninstall(args, ctx):
     manifests = load_manifests(p)
     stores = known_stores(ctx, manifests)
     copies = active_copies(p, manifests)
+    plugin_link = os.path.abspath(pluginlink.slot(p))
+    plugin_ours = pluginlink.is_ours(p, plugin_link, manifests)
     candidates = [p.join(p.claude_home(), "CLAUDE.md"), p.join(p.codex_home(), "AGENTS.md"), p.agents_skills()]
     for skills_dir in (p.claude_skills(), p.agents_skills()):
         if os.path.isdir(skills_dir) and not is_linklike(skills_dir):
@@ -469,6 +478,11 @@ def cmd_uninstall(args, ctx):
             if lt and any(within(lt, s) for s in stores):
                 removed.add(path)
                 out("%s link %s" % ("would remove" if dry else "removed", tilde(path)))
+                if not dry:
+                    remove_link(path)
+            elif plugin_ours and norm(path) == norm(plugin_link):
+                removed.add(path)  # the plugin link points at the tool, not into the store
+                out("%s the plugin link %s" % ("would remove" if dry else "removed", tilde(path)))
                 if not dry:
                     remove_link(path)
             continue
