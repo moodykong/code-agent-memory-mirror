@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.8
+
+- `box unsent` and the stop check name the file when a folder holds a single unsent file
+  (`results/big.bin (3.0 MiB; large)`, where 0.5.7 printed `results/ (1 file, 3.0 MiB; large)`). A folder with two
+  or more such files is still one line.
+
 ## 0.5.7
 
 The stop check no longer fights the vendor's own stop hook. On Claude Code on the web, the vendor's hook asks the

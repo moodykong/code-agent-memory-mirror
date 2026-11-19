@@ -85,7 +85,7 @@ class ClassesTest(CloneMixin, ToolTest):
         )
         self.assertEqual([p["class"] for p in data["paths"]][:5], ["for_the_box"] * 5)  # the files for the box first
         classes = set((e["path"], e["class"], tuple(e["reasons"])) for e in data["entries"])
-        self.assertIn(("out/", "for_the_box", ("git_ignored",)), classes)
+        self.assertIn(("out/model.bin", "for_the_box", ("git_ignored",)), classes)
         self.assertIn(("data/big.txt", "for_the_box", ("large",)), classes)
         rc, out = self.unsent()
         self.assertEqual(rc, 0, out)
@@ -94,7 +94,7 @@ class ClassesTest(CloneMixin, ToolTest):
         self.assertIn("  in data/: 2 files, 1.7 MiB", lines)
         self.assertIn("    data/big.txt (1.5 MiB; large)", lines)
         self.assertIn("    data/mid.bin (200.0 KiB; binary)", lines)
-        self.assertIn("  out/ (1 file, 8 B; ignored by git)", lines)
+        self.assertIn("  out/model.bin (8 B; ignored by git)", lines)  # a folder with one file: the file is named
         self.assertIn("  results/run-1/b.log (2 B; ignored by git)", lines)
         self.assertIn("  run.log (4 B; ignored by git)", lines)
         self.assertIn("left to git: 4 small untracked files, 250.0 KiB (commit them; --all lists them)", lines)
@@ -157,7 +157,7 @@ class ClassesTest(CloneMixin, ToolTest):
         rc, out = self.unsent()
         lines = out.splitlines()
         self.assertIn("  notes.md (2 B; many small files)", lines)
-        self.assertIn("  docs/ (1 file, 2 B; many small files)", lines)  # a wholly new folder stays one line
+        self.assertIn("  docs/a.md (2 B; many small files)", lines)  # a folder with one file: the file is named
 
     def test_outside_a_git_repo_every_file_is_for_the_box(self):
         plain = os.path.join(self.base, "plain", "demo")
@@ -238,7 +238,7 @@ class StopSplitTest(CloneMixin, ToolTest):
             lines[0], "agent-mirror %s stop check (Claude Code Stop hook: agent-mirror hook stop-check)" % __version__
         )
         self.assertIn("demo (%s): 1 file for the box" % self.project, lines)
-        self.assertIn("  results/ (1 file, 2.9 KiB; large)", lines)
+        self.assertIn("  results/model.ckpt (2.9 KiB; large)", lines)
         self.assertIn(
             "Small untracked files are left to git (commit them as usual); committing a file listed here is not the "
             "remedy: send it or skip it.",

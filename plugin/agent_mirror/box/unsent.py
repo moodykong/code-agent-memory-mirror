@@ -592,8 +592,9 @@ class Finder:
 
     def entries(self, cls):
         """Display units of one class: a folder whose files are all unsent and of that class is one entry (the
-        highest such folder inside what git reported as a whole), the files of a group over the total limit are
-        one entry, every other file is its own entry; each with the reasons of its files; largest first."""
+        highest such folder inside what git reported as a whole; a folder that holds a single such file is shown
+        as that file), the files of a group over the total limit are one entry, every other file is its own
+        entry; each with the reasons of its files; largest first."""
         slot = 1 if cls == FOR_BOX else 2
         units = {}
         for rel, size, _, root, c, why in self.files:
@@ -615,9 +616,13 @@ class Finder:
             )
             u["files"] += 1
             u["bytes"] += size
+            u["one"] = rel
             if why not in u["reasons"]:
                 u["reasons"].append(why)
         for u in units.values():
+            one = u.pop("one")
+            if u["folder"] and u["files"] == 1:  # a folder that holds one file: name the file, not the folder
+                u["path"], u["folder"] = one, False
             u["reasons"].sort(key=CLASS_REASONS.index)
         return sorted(units.values(), key=lambda u: (-u["bytes"], u["path"]))
 
