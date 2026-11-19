@@ -9,7 +9,7 @@ Python 3.8+ standard library only.
 
 import os
 
-__version__ = "0.5.6"
+__version__ = "0.5.7"
 
 # plugin/ (the folder that holds bin/, templates/ and this package)
 PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.realpath(os.path.abspath(__file__))))

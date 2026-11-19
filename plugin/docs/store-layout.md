@@ -150,7 +150,8 @@ Written on the cloud machine, never in the store:
 | `~/agent_setup_probe.txt` | the setup script's notes: each step's name, result and time, never output |
 | `<config>/bootstrap-stamp.json` | what `cloud bootstrap` set up: per project a hash of `python`, `setup_commands` and `companion_repos`, the agent-mirror commit, the store commit |
 | `<cache>/session-start.jsonl` | one JSON line per `session-start` run (the newest 50): each step's name, start, end, seconds and status, never output; `probe` prints the last one |
-| `<cache>/stop-check.json` | the stop check's memory for the current session (since 0.5.6): the `session_id`, how often it blocked, short digests of the files it last blocked on (never names) and its last outcome |
+| `<cache>/stop-check.json` | the stop check's memory for the current session (since 0.5.6): the `session_id`, how often it blocked, short digests of the files for the box it last blocked on (never names) and its last outcome |
+| `<cache>/stop-check.log` | one line per run of the stop check (since 0.5.7, the newest 200): the time, the agent-mirror version, the `session_id`, the decision (`block`, `pass` or `error`), the counts of files for the box and left to git, and the outcome; never a file name; `probe` prints the last five |
 
 `<config>` and `<cache>` are agent-mirror's folders (`~/.config/agent-mirror` and `~/.cache/agent-mirror`
 on Linux; `agent-mirror debug paths` prints them). Developer machines write `session-start.jsonl` too.
@@ -237,7 +238,9 @@ work offline on other machines.
 label, runtime, host and start time). agent-mirror adds `/.agent-mirror/` to the clone's
 `.git/info/exclude`, never to the tracked `.gitignore`. Fetched sessions (`_sessions/`), `box receive`
 (default `_agent_outbound/`) and `box mount` (default `_box/`) folders inside the project are added there
-too. Since 0.5.6, all optional, and read only by the machine that wrote them:
+too. Since 0.5.7, on a cloud runtime, `box send` and `box skip` add there the paths they dealt with (each
+anchored to the exact path; see "Unsent files" in project-config.md). Since 0.5.6, all optional, and read only
+by the machine that wrote them:
 
 | File | What |
 | --- | --- |

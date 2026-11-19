@@ -29,7 +29,8 @@ settings never means pasting it again.
   - runs `agent-mirror init-store --adopt` (writes the user config), `install --agents claude` and
     `hooks install` (session start, memory write and session end hooks in `~/.claude/settings.json`, and,
     with agent-mirror 0.5.6 or later, the Stop hook that asks the session to send or leave behind the files
-    `agent-mirror box unsent` lists before it ends);
+    `agent-mirror box unsent` lists before it ends; since 0.5.7 only the files for the box, while small
+    untracked files are left to the vendor's own hook that asks to commit them);
   - records a stamp of those setup inputs and the agent-mirror commit on the machine
     (`~/.config/agent-mirror/bootstrap-stamp.json`, never in the store).
 - Writes timings to `~/agent_setup_probe.txt`, and always exits 0.

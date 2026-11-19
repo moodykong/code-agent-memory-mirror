@@ -215,6 +215,9 @@ Settings for on-demand retrieval (all optional):
 | `receive_dir` | `_agent_outbound` | where `box receive` puts the sessions it downloads (relative to the project folder, or absolute; the default keeps its older name) |
 | `mount_dir` | `_box` | where `box mount` mounts the shared side (relative to the project folder, or absolute) |
 | `unsent_ignore` | none | more patterns (the include and exclude syntax) that `box unsent` and the stop check leave out, for example `["**/*.ckpt.tmp", "logs/**"]`; see "Unsent files" |
+| `git_text_max_bytes` | `1048576` (1 MiB) | an untracked file bigger than this is for the box, not left to git; `0`: every untracked file is; see "Unsent files" |
+| `git_binary_max_bytes` | `102400` (100 KiB) | a binary untracked file (a NUL byte in its first 8 KiB) bigger than this is for the box; `0`: every binary one is |
+| `git_total_max_bytes` | `20971520` (20 MiB) | when the small untracked files of one top-level folder together are bigger than this, they are all for the box; `0`: every small untracked file is |
 
 Patterns: `**` crosses folders, `*` and `?` do not, and `**/` also matches no folder. A pattern without
 `/` matches a file name at any depth.
@@ -541,9 +544,10 @@ A rule for your instructions file (the store's `AGENTS.md`), so that cloud agent
 The keep or leave rule that goes with it (see "Unsent files" below; the template `AGENTS.md` has both):
 
 ```
-- Before finishing a cloud session, run `agent-mirror box unsent`; for each file it lists, send it with
-  `agent-mirror box send PATH --label NAME --note "what, why, what next"`, or declare it disposable with
-  `agent-mirror box skip PATH... --reason "why it can go"`.
+- Before finishing a cloud session, run `agent-mirror box unsent`. Small new files that belong in git are
+  committed as usual. Large or binary outputs, and anything in a git-ignored output folder, go to the box
+  with `agent-mirror box send PATH --label NAME --note "what, why, what next"`, or are declared disposable
+  with `agent-mirror box skip PATH... --reason "why it can go"`; `box unsent` shows which is which.
 - KEEP results that took real time or money to produce, analysis outputs, generated reports and figures,
   anything a later session would otherwise have to redo. LEAVE caches, anything rebuildable in minutes,
   files already in git, secrets and env files.
@@ -578,8 +582,14 @@ A cloud machine is thrown away after the session, and memory is synced by hooks 
 a result the session made and never sent is lost. The program detects such files, the agent judges each
 one, and on a Claude cloud machine a Stop hook makes sure the judging happens.
 
-**`agent-mirror box unsent [--json] [--check] [--time-limit 5]`** lists the files of the project clone
-for which all of these hold:
+Small new files that git can hold are git's business: the vendor's own stop hook on Claude Code on the web
+asks the session to commit and push untracked files, and the session commits them as usual. What git should
+not hold (large or binary outputs, many small result files, anything in a git-ignored folder) is the box's
+business. So `box unsent` sorts the files it finds into two classes, and the stop check asks only about the
+files for the box: the two hooks never ask about the same file.
+
+**`agent-mirror box unsent [--all] [--json] [--check] [--time-limit 5]`** looks at the files of the project
+clone for which all of these hold:
 
 - git does not track it (untracked or ignored); tracked files are git's business;
 - its modification time is at or after the session baseline (2 seconds of slack for coarse file-system
@@ -597,35 +607,51 @@ for which all of these hold:
   it uploaded in the local session record (`.agent-mirror/session.json`, key `sent`);
 - it is not under a path declared disposable with `box skip` (key `skipped` of the same record).
 
-The **session baseline** is a time that `session-start` records for each project clone that has a box, in
-`<clone>/.agent-mirror/baseline.json` (git-excluded, like the other records there), at the end of its run:
-after the setup steps, the dependency sync and the start commands, so what they make is not counted as the
-session's work. A later session start of the same session keeps it (Claude Code runs the session start
-again on a resume, a clear and a compaction). Same session means what `box send` uses for its session: on
-a cloud runtime the same runtime and the same machine (host name), on a developer runtime the same runtime
-and a baseline at most 24 hours old. Without a baseline (`session-start` never ran here, or an older version
-ran it), `box unsent` says so in one line and counts from the time the clone was made: the time of the first
-entry of git's log of HEAD (`git rev-parse --git-path logs/HEAD`). On a cloud machine the clone is made for
-the session, so that is close to the session's start; on a developer machine it is older and lists more,
-which is the safe side. Without that either (not a git clone, or no log), every untracked or ignored file
-counts.
+Each such file is then **for the box** or **left to git**:
 
-The listing groups the files by top-level folder, largest first. A folder whose files are all new (inside
-what git reports as a wholly untracked or ignored folder) is one line, `folder/ (N files, size)`; other files
-are listed one by one under `in folder/: N files, size`. At most 30 lines, then `and N more files, size`:
+| Class | Which files | Reason (`--json`) | Tag in the listing |
+| --- | --- | --- | --- |
+| for the box | ignored by git (a `.gitignore` rule, `.git/info/exclude` or the global excludes), any size | `git_ignored` | `ignored by git` |
+| for the box | untracked, bigger than `box.git_text_max_bytes` (default 1 MiB) | `large` | `large` |
+| for the box | untracked, binary (a NUL byte in its first 8 KiB) and bigger than `box.git_binary_max_bytes` (default 100 KiB) | `binary` | `binary` |
+| for the box | untracked and small, in a top-level group whose small untracked files together are bigger than `box.git_total_max_bytes` (default 20 MiB) | `many_small` | `many small files` |
+| for the box | anything, when the clone is not a git repo | `not_git` | none |
+| left to git | every other untracked file (small text, small binary) | `small` | none |
+
+- A top-level group is a top-level folder of the clone, or a file at the top on its own. When the total rule
+  applies, the whole group is for the box and is shown as one folder line: the deepest folder that holds its
+  small files (the top-level folder, or for example `src/gen/` when only that part is new).
+- The binary test reads the first 8 KiB of a file only when its size is between the two limits, so the walk
+  reads no file content otherwise and makes no git call per file.
+- A limit of `0` leaves nothing to git under its rule: `git_text_max_bytes: 0` makes every untracked file
+  for the box, `git_binary_max_bytes: 0` every binary one, `git_total_max_bytes: 0` every small one. All
+  three keys are optional; a value that is not a whole number of 0 or more is reported as a warning (here and
+  in `doctor`) and its default is used.
+- An ignored file inside a new untracked folder (`results/run.log` under a new `results/`) is for the box,
+  as git reports it.
+
+The listing shows the files for the box, grouped by top-level folder, largest first. A folder whose files are
+all new and all for the box (inside what git reports as a wholly untracked or ignored folder) is one line,
+`folder/ (N files, size)`; other files are listed one by one under `in folder/: N files, size`. At most 30
+lines, then `and N more files, size`. One line follows for the files left to git; `--all` lists them in a
+block of their own instead:
 
 ```
-unsent in demo (/home/user/demo): 6 files, 2.3 MiB, changed since 2026-11-19T14:44:29Z (session start), in no git commit and not in the box:
-  in results/: 3 files, 2.0 MiB
-    results/run-3/ (2 files, 2.0 MiB)
-    results/summary.csv (4.9 KiB)
-  figures/ (1 file, 293.0 KiB)
-  notes.md (1.2 KiB)
-  run.log (4 B)
+unsent in demo (/home/user/demo): 2404 files for the box, 35.8 MiB, changed since 2026-11-19T14:44:29Z (session start), in no git commit and not in the box:
+  sweep/ (2400 files, 21.5 MiB; many small files)
+  results/run-3/model.ckpt (12.0 MiB; large)
+  out/ (1 file, 2.0 MiB; ignored by git)
+  figures/ (1 file, 300.0 KiB; binary)
+  run.log (400 B; ignored by git)
+left to git: 3 small untracked files, 7.0 KiB (commit them; --all lists them)
 left out: 1 older than the baseline, 2 folders left out by name
 keep a file or folder: agent-mirror box send PATH --label NAME --note "what, why, what next"
 leave it behind:       agent-mirror box skip PATH... --reason "why it can go"
 ```
+
+With `--all`, the `left to git` line becomes `left to git: 3 small untracked files, 7.0 KiB (commit them as
+usual):` followed by their listing, in the same form. When nothing is for the box, the first line reads
+`nothing for the box in demo (...)` (or `nothing unsent in demo (...)` when nothing is left to git either).
 
 A folder line counts the files `box unsent` considers; `box send` of that folder applies the box's exclude
 rules and env-file rule too, but not the list of folders left out by name.
@@ -634,12 +660,16 @@ rules and env-file rule too, but not the list of folders left out by name.
   way of a git command running at the same time), a walk of what git reports, and the local records. The
   whole check stops at `--time-limit` seconds (default 5) and then says `the check was cut short after 5 s`.
 - `--json` prints the document: `baseline` (`source`: `session-start`, `clone` or `none`, `at`, `seconds`),
-  `complete`, `files`, `bytes`, `checked`, `entries` (the lines above), `paths` (every file with its size and
-  time, the first 2000, then `paths_more`), `left_out` (a count per reason: `before_baseline`, `fetched`,
-  `sent`, `skipped`, `env`, `links`, `builtin`, `nested_git`, `managed`, `excluded`, `ignored`) and `warnings`.
-- Exit code: 0. With `--check`: 0 when nothing is unsent, 3 when something is unsent or the check could not
-  finish (cut short, or git failed). 1 when no project matched or its folder is missing, 2 for bad arguments.
-  A project whose box is not configured has nothing to send to: it says so and exits 0.
+  `complete`, `in_git`, `files` and `bytes` (both classes), `for_the_box` and `left_to_git` (each
+  `{"files", "bytes"}`), `limits` (the three limits in use), `checked`, `entries` (the lines above, files
+  for the box first, each with `class` and `reasons`), `paths` (every file with its size, time, `class` and
+  `reason`, the files for the box first, the first 2000, then `paths_more`), `left_out` (a count per reason:
+  `before_baseline`, `fetched`, `sent`, `skipped`, `env`, `links`, `builtin`, `nested_git`, `managed`,
+  `excluded`, `ignored`) and `warnings`.
+- Exit code: 0. With `--check`: 3 when something is for the box or the check could not finish (cut short, or
+  git failed), else 0 (files left to git never make it 3). 1 when no project matched or its folder is
+  missing, 2 for bad arguments. A project whose box is not configured has nothing to send to: it says so and
+  exits 0.
 - It works on developer machines too, from the baseline of the last session start there (24 hours).
 
 **`agent-mirror box skip PATH... --reason TEXT [--label TEXT]`** declares files or folders of the clone
@@ -657,6 +687,35 @@ characters, refused when it looks like it holds a secret. It is recorded twice:
   session (a manifest with no files). When the box is not configured or cannot be reached (no transfer
   program, no sign-in, a failed write), it says so in one line, keeps the local record and exits 0.
 
+**The local git exclude after a send or a skip** (cloud runtimes only). A file that was sent to the box, or
+declared disposable, should not then be committed because the vendor's hook still sees it as untracked. So on
+a cloud runtime:
+
+- `box send PATH` adds PATH to the clone's local git exclude file (`.git/info/exclude`, the file
+  `git rev-parse --git-path info/exclude` names; never `.gitignore`, never committed) when git reports it as
+  untracked and all of its files are for the box by the rules above (applied to every file under it, whatever
+  the session records say). When PATH also holds files left to git, only its files that are for the box are
+  added: a small sent file may still be committed, so it stays visible to git. A path git reports as ignored
+  is already out of sight; a tracked one is git's.
+- `box skip PATH...` adds every untracked path at or under the given paths, small or large: it was declared
+  disposable, so nothing should ask to commit it.
+- Each line is anchored to the exact path: a leading `/`, a trailing `/` for a folder, and git's special
+  characters (`*`, `?`, `[`, `\`, trailing spaces) escaped, so `/results/run-3/model.ckpt` hides that file and
+  nothing else. A line already there is not added again. At most 100 paths per command; above that nothing is
+  added and it says so. The command prints one line when it added something:
+
+  ```
+  added /results/run-3/model.ckpt to this clone's local git exclude file (.git/info/exclude, never committed): it is in the box now, so a stop hook that asks to commit untracked files leaves it alone
+  added /sweep/ to this clone's local git exclude file (.git/info/exclude, never committed): it is declared disposable, so a stop hook that asks to commit untracked files leaves it alone
+  ```
+
+- The sent and skipped records keep those files out of `box unsent` although git now ignores them. A sent
+  file that changes afterwards comes back, as ignored by git, so for the box.
+- Developer machines never touch the exclude file for a send or a skip.
+- UNVERIFIED: this relies on the vendor's hook looking at untracked files as `git status` reports them
+  (so that what the local exclude file hides is not asked for). If it lists files some other way, the lines
+  do no harm, and the stop check's log (below) shows which hook asked.
+
 **The stop check** (Claude Code only): on a cloud runtime, `hooks install` (and so `cloud bootstrap`) adds a
 fourth hook, `Stop: agent-mirror hook stop-check` with a timeout of 30 s. Developer machines never get it, so
 it adds no time to their turns, and `hooks install` there removes one of ours if it finds it. When the agent
@@ -666,39 +725,60 @@ ends its turn, the hook:
 - runs the check of `box unsent` for each project clone of the session that has a box (the projects
   `session-start` finds from `CLAUDE_PROJECT_DIR`, else the `cwd` of the hook input), within 8 seconds in all
   (`--time-limit`), and a hard stop with exit 0 twelve seconds after that;
-- when files are unsent, prints `{"decision": "block", "reason": "..."}`, which keeps the agent working with
-  the reason as its instruction:
+- when files are for the box, prints `{"decision": "block", "reason": "..."}`, which keeps the agent working
+  with the reason as its instruction. The reason starts with a fixed line that names the tool and its version,
+  lists only the files for the box, and says in one line that small untracked files are left to git and that
+  committing a listed file is not the remedy:
 
   ```
-  agent-mirror: this cloud machine is thrown away after the session, and these files of the project clone are in no git commit and not in the box:
-  demo (/home/user/demo): 6 files
-    in results/: 3 files, 2.0 MiB
-      results/run-3/ (2 files, 2.0 MiB)
-      results/summary.csv (4.9 KiB)
-    figures/ (1 file, 293.0 KiB)
-    notes.md (1.2 KiB)
-    run.log (4 B)
+  agent-mirror 0.5.7 stop check (Claude Code Stop hook: agent-mirror hook stop-check)
+  This cloud machine is thrown away after the session, and these files of the project clone (large, binary, many small files or ignored by git) are in no git commit and not in the box:
+  demo (/home/user/demo): 2404 files for the box
+    sweep/ (2400 files, 21.5 MiB; many small files)
+    results/run-3/model.ckpt (12.0 MiB; large)
+    out/ (1 file, 2.0 MiB; ignored by git)
+    figures/ (1 file, 300.0 KiB; binary)
+    run.log (400 B; ignored by git)
+  Small untracked files are left to git (commit them as usual); committing a file listed here is not the remedy: send it or skip it.
   For each one, either send it: agent-mirror box send PATH --label NAME --note "what, why, what next"
   or declare it disposable: agent-mirror box skip PATH... --reason "why it can go"
   KEEP results that took real time or money to produce, analysis outputs, generated reports and figures, anything a later session would otherwise have to redo. LEAVE caches, anything rebuildable in minutes, files already in git, secrets and env files.
   ```
 
-- never blocks twice on the same set: it keeps short digests of the files it last blocked on (never their
-  names) in `<cache>/stop-check.json`, per `session_id` of the hook input, and blocks again only when the
-  set gained a file. The set shrinking (files sent or skipped) never blocks. `stop_hook_active` (the agent is
-  already continuing because of a stop hook) is honoured by the same rule: it blocks only on files that were
-  not in the set it last blocked on. At most 3 blocks per session; Claude Code itself also caps consecutive
+- passes when only files left to git are there: those are the vendor hook's to ask about;
+- never blocks twice on the same set: it keeps short digests of the files for the box it last blocked on
+  (never their names) in `<cache>/stop-check.json`, per `session_id` of the hook input, and blocks again only
+  when that set gained a file. Files left to git never count, so a change among them never makes it block
+  again. The set shrinking (files sent or skipped) never blocks. `stop_hook_active` (the agent is already
+  continuing because of a stop hook) is honoured by the same rule: it blocks only on files that were not in
+  the set it last blocked on. At most 3 blocks per session; Claude Code itself also caps consecutive
   continuations;
 - never blocks when its input cannot be read, on any error, or when a check was cut short or git failed; it
-  never prints file contents.
+  never prints file contents;
+- adds one line per run to `<cache>/stop-check.log` and keeps the newest 200: the time, the agent-mirror
+  version, the `session_id`, the decision (`block`, `pass` or `error`), how many files were for the box and
+  left to git (`-` when the check did not finish), and the outcome in brackets; never a file name. For an
+  error it records the error's type only. `agent-mirror probe` and `probe --full` print whether the Stop hook
+  is installed (and whether this runtime should have it) and the last five lines:
+
+  ```
+  stop check hook (Stop: agent-mirror hook stop-check, claude-cloud): installed
+  stop check log (~/.cache/agent-mirror/stop-check.log), the last 2 of 2 runs kept:
+    2026-11-19T15:50:10Z agent-mirror 0.5.7 session=0f3c9a8e decision=block for_the_box=2404 left_to_git=3 (blocked (2404 files for the box))
+    2026-11-19T15:50:41Z agent-mirror 0.5.7 session=0f3c9a8e decision=pass for_the_box=2 left_to_git=3 (passed (no new files for the box))
+  ```
+
+  On a developer machine `probe` prints these lines only when there is something to see (a Stop hook of ours
+  in the settings, or a log).
 
 The contract it relies on is Claude Code's hooks reference (the `Stop` event: stdin JSON with `session_id`,
 `cwd`, `hook_event_name` and `stop_hook_active`; exit 0 with `{"decision": "block", "reason": ...}` on stdout
 prevents the stop and gives Claude the reason). UNVERIFIED on a real cloud machine: that Claude Code on the
 web runs user-level Stop hooks from `~/.claude/settings.json` (see the cloud README's notes), how it combines
-ours with the vendor's own stop hook (which asks to commit and push untracked files), and that a hook added
-during a running session is used before the next session. Codex has no stop hook here: its instructions say
-to run `box unsent` before finishing.
+ours with the vendor's own stop hook (which asks to commit and push untracked files; this version stays out of
+its way for small files and hides what was sent or skipped from it, see above), and that a hook added during a
+running session is used before the next session. Codex has no stop hook here: its instructions say to run
+`box unsent` before finishing.
 
 **Machines built before 0.5.6.** A cloud machine set up by an older version has three hooks. Its session
 start adds the missing Stop hook (see "Cloud setup and drift repair" above), but the vendor's cached machine

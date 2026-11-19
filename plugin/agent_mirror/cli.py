@@ -217,9 +217,10 @@ def build_parser():
         parents=[common],
         help="handlers called by agent hooks (read the hook JSON on stdin, always exit 0)",
         description="memory-write: sync when the file just written is a store memory, skill or instruction file. "
-        "stop-check (cloud runtimes only; silent elsewhere): when the session's project clones hold files that are "
-        "in no git commit and not in the box (`box unsent`), print the Stop hook decision that asks the agent to "
-        "send each one or declare it disposable; never the same set twice, at most 3 times a session.",
+        "stop-check (cloud runtimes only; silent elsewhere): when the session's project clones hold files for the "
+        "box (large, binary, many small files or ignored by git; `box unsent`), print the Stop hook decision that "
+        "asks the agent to send each one or declare it disposable; small untracked files are left to git; never "
+        "the same set twice, at most 3 times a session; one line per run in <cache>/stop-check.log.",
     )
     s.add_argument("name", choices=["memory-write", "stop-check"])
     s.add_argument(
@@ -445,12 +446,18 @@ def build_parser():
         "unchanged, not sent in this session unchanged, not declared disposable with `box skip`, and not left out "
         "by name (env files, links, .git, .agent-mirror, __pycache__, .venv, venv, node_modules, .cache, "
         ".pytest_cache, .mypy_cache, .ruff_cache, .tox, .nox, nested git clones), box.exclude or "
-        "box.unsent_ignore. Grouped by top-level folder, largest first. Read-only and offline. Exit 0; with "
-        "--check, 3 when something is unsent or the check could not finish.",
+        "box.unsent_ignore. Each is for the box (ignored by git, or untracked and large: above "
+        "box.git_text_max_bytes, binary above box.git_binary_max_bytes, or one of many small files of a top-level "
+        "folder above box.git_total_max_bytes in all) or left to git (a small untracked file: commit it as usual). "
+        "Lists the files for the box grouped by top-level folder, largest first, and one line for the rest. "
+        "Read-only and offline. Exit 0; with --check, 3 when something is for the box or the check could not finish.",
     )
+    b.add_argument("--all", action="store_true", help="also list the small untracked files left to git")
     b.add_argument("--json", action="store_true", help="print JSON")
     b.add_argument(
-        "--check", action="store_true", help="exit 3 when files are unsent or the check could not finish, 0 when none"
+        "--check",
+        action="store_true",
+        help="exit 3 when files are for the box or the check could not finish, 0 otherwise",
     )
     b.add_argument(
         "--time-limit",

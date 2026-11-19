@@ -226,9 +226,10 @@ def quick_probe(args, ctx):
     out("projects: %s" % (", ".join(d.names()) or "none matched"))
     out("env vars set (names only): %s" % (", ".join(is_set) or "none"))
     out("env vars not set: %s" % (", ".join(not_set) or "none"))
+    from agent_mirror.hooks import stop_check_lines
     from agent_mirror.steplog import last_record, record_lines
 
-    for line in record_lines(last_record(plat)):
+    for line in record_lines(last_record(plat)) + stop_check_lines(ctx):
         out(line)
     out("probe: %d pass, %d fail" % (passed, failed))
     return 0
@@ -326,9 +327,10 @@ def full_probe(args, ctx):
     if not seen:
         out("no agent_setup_probe.txt (no cloud setup script ran here)")
     from agent_mirror.bootstrap import stamp_lines
+    from agent_mirror.hooks import stop_check_lines
     from agent_mirror.steplog import last_record, record_lines
 
-    for line in stamp_lines(plat) + record_lines(last_record(plat)):
+    for line in stamp_lines(plat) + record_lines(last_record(plat)) + stop_check_lines(ctx):
         out(line)
     if store:
         rc, log, stderr = git(store.root, ["log", "--oneline", "-1"], 10)

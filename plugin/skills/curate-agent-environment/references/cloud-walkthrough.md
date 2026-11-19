@@ -64,6 +64,7 @@ Read the output for:
 | Did setup finish inside the caching limit, and how long does the dependency install take? | Setup note, timing section |
 | How long did each session-start step take, and did a drift repair run? | The last session-start record (setup section) |
 | Is the stop check there that asks the session to send or leave behind its unsent files (Claude, agent-mirror 0.5.6 or later)? | Doctor section: `hooks (claude): 4 of 4`; the session-start record has a `hooks check` step |
+| Which stop hook asked the session to do what (ours or the vendor's commit hook; agent-mirror 0.5.7 or later)? | Setup section: the `stop check hook` line and the last lines of the stop check's log (a block reason of ours starts with `agent-mirror <version> stop check`) |
 
 Each failure has a usual fix:
 

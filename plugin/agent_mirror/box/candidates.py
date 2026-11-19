@@ -69,19 +69,23 @@ def git_entries(project, timeout=120):
     return found if state == "ok" else None
 
 
-def git_status(project, timeout=120):
+def git_status(project, timeout=120, pathspec=None):
     """('ok', [(relative path, 'untracked' or 'ignored')]), ('not-git', None) or ('failed', why).
 
     git reports a folder whose whole content is untracked or ignored as one entry. The listing never takes the
     index lock (--no-optional-locks), so it never gets in the way of git commands running at the same time.
-    timeout bounds the status call (seconds).
+    timeout bounds the status call (seconds). pathspec: one path relative to the project folder, taken
+    literally, to look at instead of the whole folder.
     """
     rc, top, _ = run(["git", "-C", project, "rev-parse", "--show-toplevel"], timeout=min(20, max(1, timeout)))
     if rc != 0 or not top.strip():
         return ("failed", "git did not answer in time") if rc is None else ("not-git", None)
+    literal = ["--literal-pathspecs"] if pathspec else []
     rc, text, stderr = run(
-        ["git", "-C", project, "--no-optional-locks", "status", "--porcelain=v1", "-z", "--ignored"]
-        + ["--untracked-files=normal", "--", "."],
+        ["git", "-C", project, "--no-optional-locks"]
+        + literal
+        + ["status", "--porcelain=v1", "-z", "--ignored"]
+        + ["--untracked-files=normal", "--", pathspec or "."],
         timeout=timeout,
     )
     if rc != 0:

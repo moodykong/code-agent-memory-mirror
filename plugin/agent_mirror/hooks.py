@@ -13,12 +13,15 @@ subcommands), so uninstall removes exactly those and nothing else, and
 install on a developer machine removes a Stop entry of ours.
 
 The stop check (Claude Code's Stop event): on a cloud runtime, when the session's project clones hold
-files that are in no git commit and not in the box (box/unsent.py), it prints
-{"decision": "block", "reason": "..."} so that the agent goes on with the reason as its instruction: send
-each file, or declare it disposable with `box skip`. It never blocks twice for the same set of files (it keeps
-short digests of the files it last blocked on, never their names, in <cache>/stop-check.json, and blocks again
-only when the set gained a file), at most STOP_BLOCKS times a session, and never when its check was cut short
-or failed. Anywhere else, or on any error, it exits 0 and prints nothing.
+files for the box (box/unsent.py: in no git commit, not in the box, and large, binary, many small files or
+ignored by git), it prints {"decision": "block", "reason": "..."} so that the agent goes on with the reason as
+its instruction: send each file, or declare it disposable with `box skip`. Small untracked files are left to
+git: a vendor's own stop hook asks to commit those, and this check stays out of its way. It never blocks twice
+for the same set of files for the box (it keeps short digests of the files it last blocked on, never their
+names, in <cache>/stop-check.json, and blocks again only when the set gained a file), at most STOP_BLOCKS times
+a session, and never when its check was cut short or failed. Every run on a cloud runtime adds one line to
+<cache>/stop-check.log (no file names; `probe` shows the last ones). Anywhere else, or on any error, it exits
+0 and prints nothing.
 """
 
 import contextlib
@@ -32,7 +35,7 @@ import threading
 import time
 import traceback
 
-from agent_mirror import PLUGIN_ROOT
+from agent_mirror import PLUGIN_ROOT, __version__
 from agent_mirror.runtime import CLOUD_RUNTIMES, detect_runtime
 from agent_mirror.util import err, iso_now, now_stamp, out, short, tilde, within, write_text
 
@@ -56,6 +59,9 @@ STOP_STATE = "stop-check.json"
 STOP_BLOCKS = 3  # blocks per session at most
 STOP_HARD_EXTRA = 12  # seconds after --time-limit when the stop check exits 0 whatever it is doing
 STOP_SHOW = 15  # lines of the listing in the reason, per project
+STOP_LOG = "stop-check.log"
+STOP_LOG_KEEP = 200  # lines of the log kept, the newest
+STOP_FIRST_LINE = "agent-mirror %s stop check (Claude Code Stop hook: agent-mirror hook stop-check)"
 
 
 def hook_set(runtime):
@@ -392,30 +398,116 @@ def cmd_stop_check(args, ctx, stdin=None):
     """Claude Code's Stop hook. Prints {"decision": "block", "reason": ...} or nothing; always exits 0.
 
     Off a cloud runtime it returns at once without reading anything. On a cloud runtime every step runs with its
-    output kept back, and a timer ends the process with exit 0 at --time-limit + STOP_HARD_EXTRA seconds whatever
-    it is doing (a hung git, a stdin that never closes)."""
+    output kept back, a timer ends the process with exit 0 at --time-limit + STOP_HARD_EXTRA seconds whatever
+    it is doing (a hung git, a stdin that never closes), and every run adds one line to <cache>/stop-check.log."""
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
         runtime = detect_runtime()
     if runtime not in CLOUD_RUNTIMES:
         return 0
     limit = max(0.0, float(getattr(args, "time_limit", 8.0) or 0.0))
-    guard = threading.Timer(limit + STOP_HARD_EXTRA, os._exit, args=(0,))
+    info = {"session": None, "decision": "pass", "box": None, "git": None, "outcome": None}
+
+    def hard_stop():
+        try:
+            info.update(decision="error", outcome="hard stop after %g s" % (limit + STOP_HARD_EXTRA))
+            log_stop(ctx.plat, info)
+        finally:
+            os._exit(0)
+
+    guard = threading.Timer(limit + STOP_HARD_EXTRA, hard_stop)
     guard.daemon = True
     guard.start()
     decision = None
     try:
         with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
             text = (stdin if stdin is not None else sys.stdin).read()
-            decision = stop_decision(ctx, text, limit)
-    except BaseException:  # noqa: BLE001 (a hook never fails the turn: no block)
+            decision = stop_decision(ctx, text, limit, info)
+    except BaseException as exc:  # noqa: BLE001 (a hook never fails the turn: no block)
         decision = None
+        info.update(decision="error", outcome=type(exc).__name__)  # the type only: a message may name a file
     finally:
         guard.cancel()
+    if decision:
+        info["decision"] = "block"
+    log_stop(ctx.plat, info)
     if decision:
         sys.stdout.write(json.dumps(decision) + "\n")
         sys.stdout.flush()
     return 0
+
+
+def stop_log_path(plat):
+    return os.path.join(plat.cache_dir(), STOP_LOG)
+
+
+def log_stop(plat, info):
+    """Add one line for a run of the stop check to <cache>/stop-check.log: the time, the tool version, the session
+    id, the decision (block, pass or error), how many files were for the box and left to git, and the outcome;
+    never a file name. Keeps the newest STOP_LOG_KEEP lines. Never raises."""
+    try:
+
+        def count(key):
+            return "-" if info.get(key) is None else str(info[key])
+
+        session = re.sub(r"[^A-Za-z0-9._-]", "", str(info.get("session") or ""))[:64] or "-"
+        line = "%s agent-mirror %s session=%s decision=%s for_the_box=%s left_to_git=%s (%s)" % (
+            time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            __version__,
+            session,
+            info.get("decision") or "pass",
+            count("box"),
+            count("git"),
+            " ".join(str(info.get("outcome") or "").split())[:160],
+        )
+        path = stop_log_path(plat)
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                lines = [ln for ln in fh.read().splitlines() if ln.strip()]
+        except OSError:
+            lines = []
+        write_text(path, "\n".join((lines + [line])[-STOP_LOG_KEEP:]) + "\n")
+    except Exception:  # noqa: BLE001 (the log never fails the hook)
+        pass
+
+
+def stop_check_lines(ctx, runtime=None, last=5):
+    """probe: whether the Stop hook is in Claude's settings (and whether this runtime should have it), and the last
+    lines of the stop check's log. On a developer runtime nothing, unless the hook is there or a log is."""
+    plat = ctx.plat
+    runtime = detect_runtime() if runtime is None else runtime
+    path = plat.claude_settings()
+    wanted = runtime in CLOUD_RUNTIMES
+    there = False
+    try:
+        settings, _ = load_settings(path)
+        hooks = settings.get("hooks") if isinstance(settings.get("hooks"), dict) else {}
+        there = bool(our_positions(hooks, "Stop", "hook stop-check"))
+        if there and wanted:
+            state = "installed"
+        elif wanted:
+            state = "MISSING (a cloud runtime should have it: `agent-mirror hooks install` adds it)"
+        elif there:
+            state = "installed, but only a cloud machine runs it (`agent-mirror hooks install` removes it)"
+        else:
+            state = "not installed (only a cloud machine runs it)"
+    except (OSError, ValueError) as exc:
+        state = "unknown (cannot read %s: %s)" % (tilde(path), short(exc, 80))
+    log = stop_log_path(plat)
+    try:
+        with open(log, encoding="utf-8", errors="replace") as fh:
+            runs = [ln for ln in fh.read().splitlines() if ln.strip()]
+    except OSError:
+        runs = []
+    if not wanted and not there and not runs:
+        return []  # a developer machine as it should be: nothing to say
+    lines = ["stop check hook (Stop: agent-mirror hook stop-check, %s): %s" % (runtime, state)]
+    if not runs:
+        lines.append("stop check log: no runs recorded (%s)" % tilde(log))
+        return lines
+    lines.append("stop check log (%s), the last %d of %d runs kept:" % (tilde(log), min(last, len(runs)), len(runs)))
+    lines += ["  " + ln for ln in runs[-last:]]
+    return lines
 
 
 def stop_state_path(plat):
@@ -444,18 +536,26 @@ def save_stop_state(plat, state, outcome):
         pass
 
 
-def stop_decision(ctx, text, limit):
-    """The Stop hook's decision dict, or None to let the agent stop. Reads only local files and git."""
+def stop_decision(ctx, text, limit, info=None):
+    """The Stop hook's decision dict, or None to let the agent stop. Reads only local files and git. It blocks only
+    on files for the box; files left to git (small untracked files) are a commit hook's business.
+
+    info, a dict, receives the session id, the counts of files for the box and left to git (when every check
+    finished) and the outcome, for the log."""
     from agent_mirror.box import unsent
     from agent_mirror.projects import discover_projects
 
+    info = {} if info is None else info
     data = json.loads(text) if text and text.strip() else None
     if not isinstance(data, dict):
+        info["outcome"] = "unreadable input"
         return None  # unreadable input: never block on it
     session = str(data.get("session_id") or "")
+    info["session"] = session
     active = data.get("stop_hook_active") is True
     store = ctx.store_or_none(quiet=True)
     if store is None:
+        info["outcome"] = "no store"
         return None
     cwd = data.get("cwd") if isinstance(data.get("cwd"), str) and os.path.isdir(data.get("cwd")) else None
     start = ctx.plat.env.get("CLAUDE_PROJECT_DIR") or cwd or os.getcwd()
@@ -463,51 +563,59 @@ def stop_decision(ctx, text, limit):
     d = discover_projects(ctx, None, start)
     results = []
     state = load_stop_state(ctx.plat, session)
+
+    def passed(outcome):
+        save_stop_state(ctx.plat, state, outcome)
+        info["outcome"] = outcome
+        return None
+
+    to_git = 0
     for project, path in d.matched:
         box = store.load_env(project).get("box") or {}
         if not os.path.isdir(path) or not unsent.box_configured(box):
             continue
         left = deadline - time.monotonic()
         if left <= 0:
-            save_stop_state(ctx.plat, state, "passed (out of time)")
-            return None
+            return passed("passed (out of time)")
         r = unsent.find_unsent(project, path, box, left, keys=True)
         if not r["complete"] or r.get("problem"):
-            save_stop_state(ctx.plat, state, "passed (check of %s cut short or failed)" % project)
-            return None  # a check that could not finish never blocks
-        if r["files"]:
+            return passed("passed (check of %s cut short or failed)" % project)  # never blocks
+        to_git += r[unsent.LEFT_TO_GIT]["files"]
+        if r[unsent.FOR_BOX]["files"]:
             results.append(r)
     keys = set(k for r in results for k in r["keys"])
+    info.update(box=len(keys), git=to_git)
     if not keys:
-        save_stop_state(ctx.plat, state, "passed (nothing unsent)")
-        return None
+        return passed("passed (nothing for the box%s)" % (", %d left to git" % to_git if to_git else ""))
     gained = keys - set(state["keys"])
     if not gained:
         # the set it last blocked on, or part of it: the agent has seen it (stop_hook_active or not)
-        save_stop_state(ctx.plat, state, "passed (no new unsent files%s)" % (", stop_hook_active" if active else ""))
-        return None
+        return passed("passed (no new files for the box%s)" % (", stop_hook_active" if active else ""))
     if state["blocks"] >= STOP_BLOCKS:
-        save_stop_state(ctx.plat, state, "passed (already blocked %d times)" % state["blocks"])
-        return None
+        return passed("passed (already blocked %d times)" % state["blocks"])
     state["blocks"] += 1
     state["keys"] = sorted(keys)
-    save_stop_state(ctx.plat, state, "blocked (%d files)" % len(keys))
+    outcome = "blocked (%d file%s for the box)" % (len(keys), "" if len(keys) == 1 else "s")
+    save_stop_state(ctx.plat, state, outcome)
+    info["outcome"] = outcome
     return {"decision": "block", "reason": stop_reason(results, several=len(d.matched) > 1)}
 
 
 def stop_reason(results, several=False):
-    """What the agent is told to do: the compact listing, the two commands and the keep/leave criteria."""
+    """What the agent is told to do: a fixed first line naming the tool, the compact listing of the files for the
+    box, the rule for files left to git, the two commands and the keep/leave criteria."""
     from agent_mirror.box import unsent
 
     lines = [
-        "agent-mirror: this cloud machine is thrown away after the session, and these files of the project clone "
-        "are in no git commit and not in the box:"
+        STOP_FIRST_LINE % __version__,
+        "This cloud machine is thrown away after the session, and these files of the project clone (large, binary, "
+        "many small files or ignored by git) are in no git commit and not in the box:",
     ]
     for r in results:
-        lines.append(
-            "%s (%s): %d file%s" % (r["project"], r["project_path"], r["files"], "" if r["files"] == 1 else "s")
-        )
+        n = r[unsent.FOR_BOX]["files"]
+        lines.append("%s (%s): %d file%s for the box" % (r["project"], r["project_path"], n, "" if n == 1 else "s"))
         lines += unsent.listing_lines(r, cap=STOP_SHOW)
+    lines.append(unsent.GIT_RULE)
     lines.append("For each one, either send it: %s" % unsent.SEND)
     lines.append("or declare it disposable: %s" % unsent.SKIP)
     if several:

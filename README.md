@@ -119,7 +119,7 @@ on the vendor's settings page.
 | `session-start [--repair-timeout 900] [--box-timeout 20] [--push-check-timeout 5]` | pull the store; on a cloud runtime also update agent-mirror to the pinned ref, repair setup drift (run the setup steps again when the store changed them, and add agent-mirror hooks the machine lacks), dependency sync, project start commands, install and companion repo links; record the session baseline in each project clone that has a box (what `box unsent` counts from); print the memory index path; on a cloud runtime list each project's newest box sessions with their notes and the shared folders that have notes; on a developer machine print one line per project whose box folders owned by this machine changed since its last push (offline); record each step's time and status in `<cache>/session-start.jsonl` |
 | `sync [--message MSG]` | adopt stray memory files (for projects this machine linked), secret scan, commit, `pull --rebase`, push (never force) |
 | `probe [--tcp HOST:PORT] [--url URL]`, `probe --full` | reachability and machine checks, and the last session-start's step times; `--full` is the long first-session report |
-| `hook memory-write`, `hook stop-check [--time-limit 8]` | hook handlers: `memory-write` runs `sync` when the file just written is a store memory, skill or instruction file; `stop-check` (cloud runtimes only, silent elsewhere) asks the agent to send or leave behind the files `box unsent` lists before the turn ends; both always exit 0 |
+| `hook memory-write`, `hook stop-check [--time-limit 8]` | hook handlers: `memory-write` runs `sync` when the file just written is a store memory, skill or instruction file; `stop-check` (cloud runtimes only, silent elsewhere) asks the agent to send or leave behind the files `box unsent` lists for the box before the turn ends (small untracked files are left to git) and logs each run in `<cache>/stop-check.log`; both always exit 0 |
 | `hooks install\|uninstall\|status [--agent claude]` | add or remove the Claude Code hooks in its user settings, keeping everything else: three on a developer machine, four on a cloud runtime (plus the Stop hook) |
 | `timer install\|uninstall\|status [--minutes 30]` | periodic `sync`: systemd user timer, launchd agent or Windows scheduled task |
 | `box push [--only FOLDER]... [--take-over [FOLDER]]... [--delete]` | upload the box folders this machine owns or claims; folders another machine owns are skipped with a note (same or different here) |
@@ -130,7 +130,7 @@ on the vendor's settings page.
 | `box sessions [--json] [--limit N]`, `box fetch --session ID [PATH] [--into DIR]` | list what earlier sessions produced, newest first, with their notes; print a session's notes and download its files (by id, unique start of the id, or label) into `_sessions/<id>/`; any runtime |
 | `box promote --session ID PATH [--as FOLDER]`, `box prune [--older-than DAYS] [--session ID]... [--keep-promoted] [--yes]` | developer machines: copy a session's file or folder into the shared tree, owned by this machine; delete old session namespaces (lists first, needs `--yes`) |
 | `box candidates [--json] [--min-bytes N]` | list the project's untracked and ignored entries with sizes and a kind guess, to choose what goes in the box; read-only |
-| `box unsent [--json] [--check] [--time-limit 5]` | list the files of the clone that this session made or changed and that are in no git commit and not in the box, grouped by top-level folder, largest first; offline and read-only; `--check` exits 3 when there are any (or the check could not finish) |
+| `box unsent [--all] [--json] [--check] [--time-limit 5]` | list the files of the clone that this session made or changed and that are in no git commit and not in the box: those for the box (large, binary, many small files, or ignored by git) grouped by top-level folder, largest first, then one line for the small untracked files left to git (`--all` lists them); offline and read-only; `--check` exits 3 when something is for the box (or the check could not finish) |
 | `box skip PATH... --reason TEXT [--label TEXT]` | declare files or folders of the clone disposable for this session: recorded locally (so `box unsent` leaves them out) and in the session manifest on the box, so later sessions see what was left behind and why |
 | `box ls [PATH]`, `box status`, `box evict PATH` | browse the box offline, see what was fetched here, delete fetched copies to free disk |
 | `box receive [--into DIR]` | download every session not received yet, one folder per session (developer machine) |
@@ -189,18 +189,25 @@ before using files from the box". Details: "Notes" in [plugin/docs/project-confi
 
 A cloud machine is thrown away after the session, so a file the session made and never sent is lost.
 `box unsent` lists the files of the clone that this session made or changed (since the baseline
-`session-start` records) and that are in no git commit and not in the box; for each one the agent either
-sends it (`box send PATH --label NAME --note "what, why, what next"`) or declares it disposable
-(`box skip PATH... --reason TEXT`, recorded in the session manifest so later sessions see what was left
-behind and why). On a Claude cloud machine a Stop hook runs the same check when the agent ends its turn and
-asks it to do one or the other, once per new set of files (Codex has no such hook: its instructions say to
-run `box unsent`). On a developer machine, `session-start` prints one line when box folders this machine owns
-changed since its last push. The rule for your instructions file (the template `AGENTS.md` has it):
+`session-start` records) and that are in no git commit and not in the box, in two classes. Small untracked
+files are left to git: they are committed as usual (on Claude Code on the web the vendor's own stop hook asks
+for that). Files for the box are those git should not hold: large or binary outputs (above 1 MiB, or binary
+above 100 KiB), many small files of one top-level folder (above 20 MiB in all), and anything git ignores (the
+three limits are optional `box` keys). For each file for the box the agent either sends it (`box send PATH
+--label NAME --note "what, why, what next"`) or declares it disposable (`box skip PATH... --reason TEXT`,
+recorded in the session manifest so later sessions see what was left behind and why). On a Claude cloud
+machine a Stop hook runs the same check when the agent ends its turn and asks it to do one or the other for
+the files for the box only, once per new set of them (Codex has no such hook: its instructions say to run
+`box unsent`); there, a send or a skip also adds the path to the clone's local git exclude file, so that a
+hook asking to commit untracked files leaves it alone. On a developer machine, `session-start` prints one line
+when box folders this machine owns changed since its last push. The rule for your instructions file (the
+template `AGENTS.md` has it):
 
 ```
-- Before finishing a cloud session, run `agent-mirror box unsent`; for each file it lists, send it with
-  `agent-mirror box send PATH --label NAME --note "what, why, what next"`, or declare it disposable with
-  `agent-mirror box skip PATH... --reason "why it can go"`.
+- Before finishing a cloud session, run `agent-mirror box unsent`. Small new files that belong in git are
+  committed as usual. Large or binary outputs, and anything in a git-ignored output folder, go to the box
+  with `agent-mirror box send PATH --label NAME --note "what, why, what next"`, or are declared disposable
+  with `agent-mirror box skip PATH... --reason "why it can go"`; `box unsent` shows which is which.
 - KEEP results that took real time or money to produce, analysis outputs, generated reports and figures,
   anything a later session would otherwise have to redo. LEAVE caches, anything rebuildable in minutes,
   files already in git, secrets and env files.
@@ -263,8 +270,10 @@ owners" in [plugin/docs/reconciliation.md](plugin/docs/reconciliation.md).
   cloud runtime unless you pass `--force`. `box rclone-env` never prints a secret value.
 - The Stop hook (`hook stop-check`) is installed on cloud runtimes only and does nothing anywhere else. It
   reads only git and local files, never prints file contents, and never blocks on an error, on input it
-  cannot read, or when its check runs out of time (8 s); it blocks at most once per new set of unsent files
-  and at most 3 times a session, and keeps only short digests of the file names it blocked on.
+  cannot read, or when its check runs out of time (8 s); it blocks at most once per new set of files for the
+  box and at most 3 times a session, and keeps only short digests of the file names it blocked on. Its log
+  (`<cache>/stop-check.log`) holds counts and decisions, never file names. The lines `box send` and `box skip`
+  add to a clone's `.git/info/exclude` on a cloud machine stay on that machine and are never committed.
 - `--dry-run` shows the exact commands, with secret values replaced by `***`.
 - `cloud render` writes a placeholder (`<STORE_REPO_TOKEN>`) where a token goes and drops any
   credentials found in the store's remote URL.

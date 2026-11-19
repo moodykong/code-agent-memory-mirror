@@ -27,6 +27,9 @@ from agent_mirror.box.common import box_context, old_side_keys, side_setting
 from agent_mirror.box.rules import azure_rule_problems, clean_rel, generic_rule_problems, is_env_file
 from agent_mirror.box.sides import side_for
 from agent_mirror.box.units import archive_unit_of, archive_units
+from agent_mirror.box.local import human
+from agent_mirror.box.unsent import LIMIT_KEYS as UNSENT_LIMIT_KEYS
+from agent_mirror.box.unsent import git_limits as unsent_git_limits
 from agent_mirror.box.unsent import ignore_patterns as unsent_ignore_patterns
 from agent_mirror.runtime import CLOUD_RUNTIMES, detect_runtime
 from agent_mirror.util import err, local_path, out, within
@@ -272,6 +275,11 @@ def send(args, s, runtime, backend, rel, root=None):
         return 0
     if not root:
         sessions.record_sent(s["project_path"], rel, s["rules"])  # local: `box unsent` leaves them out
+        if runtime in CLOUD_RUNTIMES:  # hide what is now in the box from a hook that asks to commit untracked files
+            from agent_mirror.box.unsent import exclude_after
+
+            for line in exclude_after(s["project_path"], [rel], s["box"], True, runtime):
+                out(line)
     entries = sessions.sent_entries(source, rel, info)
     if not entries:
         return 0
@@ -346,6 +354,12 @@ def describe_box(env, paths=()):
     if box.get("unsent_ignore") is not None:
         good, _ = unsent_ignore_patterns(box)
         lines.append("unsent_ignore %s (left out of `box unsent`)" % (", ".join(good) or "none usable"))
+    limits, limit_problems = unsent_git_limits(box)
+    if any(box.get(key) is not None for key, _ in UNSENT_LIMIT_KEYS):
+        lines.append(
+            "left to git: untracked files up to %s, binary ones up to %s, %s in all per top-level folder "
+            "(`box unsent`; 0 leaves nothing to git under that rule)" % tuple(human(n) for n in limits)
+        )
     if box.get("archives"):
         lines.append("archives %s (one bundle per matching folder; large files on their own)" % ", ".join(box.get("archives")))
     old = old_side_keys(box, backend)
@@ -355,7 +369,7 @@ def describe_box(env, paths=()):
             % (", ".join(old), ", ".join(k.replace("inbound", "shared").replace("outbound", "sessions") for k in old))
         )
     problems = problems + archive.archive_problems(box)
-    warnings = list(unsent_ignore_patterns(box)[1])
+    warnings = list(unsent_ignore_patterns(box)[1]) + limit_problems
     if not problems:
         globs = [str(g).strip().strip("/") for g in box.get("archives") or []]
         for path in paths:

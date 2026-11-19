@@ -84,6 +84,10 @@ class CloneMixin:
             os.utime(path, (t, t))
         return path
 
+    def nothing_to_git(self):
+        """Every limit 0: nothing is left to git, so every unsent file is for the box (as 0.5.6 listed them)."""
+        self.set_box(git_text_max_bytes=0, git_binary_max_bytes=0, git_total_max_bytes=0)
+
     def local_record(self):
         path = self.p(".agent-mirror", "session.json")
         return json.loads(read(path)) if os.path.isfile(path) else {}
@@ -174,6 +178,7 @@ class UnsentTest(CloneMixin, ToolTest):
         self.assertEqual(data["baseline"]["source"], "session-start")
 
     def test_folders_that_are_all_new_collapse_and_the_listing_is_capped(self):
+        self.nothing_to_git()
         self.baseline()
         self.make("results/run-3/a.csv", "a" * 3000)
         self.make("results/run-3/b.csv", "b" * 3000)
@@ -185,13 +190,15 @@ class UnsentTest(CloneMixin, ToolTest):
         rc, out = self.unsent(CLAUDECODE="1", AGENT_RUNTIME=None)
         self.assertEqual(rc, 0, out)
         lines = out.splitlines()
-        self.assertRegex(lines[0], r"^unsent in demo \(.*\): 6 files, .*changed since .* \(session start\), in no git")
+        self.assertRegex(
+            lines[0], r"^unsent in demo \(.*\): 6 files for the box, .*changed since .* \(session start\), in no git"
+        )
         self.assertIn("  in results/: 3 files, 6.0 KiB", lines)
-        self.assertIn("    results/run-3/ (2 files, 5.9 KiB)", lines)
-        self.assertIn("    results/summary.csv (100 B)", lines)
-        self.assertIn("  figs/ (2 files, 1000 B)", lines)
-        self.assertIn("  notes.md (2 B)", lines)
-        self.assertLess(lines.index("  in results/: 3 files, 6.0 KiB"), lines.index("  figs/ (2 files, 1000 B)"))
+        self.assertIn("    results/run-3/ (2 files, 5.9 KiB; large)", lines)
+        self.assertIn("    results/summary.csv (100 B; large)", lines)
+        self.assertIn("  figs/ (2 files, 1000 B; large)", lines)
+        self.assertIn("  notes.md (2 B; large)", lines)
+        self.assertLess(lines.index("  in results/: 3 files, 6.0 KiB"), lines.index("  figs/ (2 files, 1000 B; large)"))
         self.assertIn(
             'keep a file or folder: agent-mirror box send PATH --label NAME --note "what, why, what next"', out
         )
@@ -208,6 +215,7 @@ class UnsentTest(CloneMixin, ToolTest):
         env = self.fake_az()
         env.update({"AGENT_RUNTIME": "claude-cloud", "FAKE_AZ_ROOT": os.path.join(self.base, "containers")})
         self.set_box(min_free_bytes=0)
+        self.nothing_to_git()
         self.baseline()
         self.make("results/r.csv", "r\n")
         self.make("results/s.csv", "s\n")
@@ -218,10 +226,13 @@ class UnsentTest(CloneMixin, ToolTest):
         self.assertEqual(rc, 0, out)
         self.assertIn("nothing unsent in demo", out)
         self.assertIn("2 sent in this session, unchanged", out)
+        # the send put results/ in the clone's local git exclude file (a cloud runtime, all of it for the box), so
+        # the changed file is back as ignored by git
+        self.assertIn("/results/\n", read(self.p(".git", "info", "exclude")))
         self.make("results/s.csv", "changed\n")
         rc, out = self.unsent("--check", **env)
         self.assertEqual(rc, 3, out)
-        self.assertIn("results/s.csv (8 B)", out)
+        self.assertIn("results/s.csv (8 B; ignored by git)", out)
 
     def test_without_a_baseline_the_clone_time_stands_in(self):
         self.make("results/new.csv")
@@ -252,6 +263,10 @@ class UnsentTest(CloneMixin, ToolTest):
         rc, out = self.unsent("--check")
         self.assertEqual(rc, 0, out)
         self.make("results/new.csv")
+        rc, out = self.unsent("--check")
+        self.assertEqual(rc, 0, out)  # a small untracked file is left to git
+        self.assertIn("left to git: 1 small untracked file, 2 B (commit them; --all lists them)", out)
+        self.make("run.log")  # ignored by git: for the box
         rc, out = self.unsent("--check")
         self.assertEqual(rc, 3, out)
         rc, out = self.unsent("--check", "--time-limit", "0")
@@ -538,6 +553,7 @@ class StopCheckTest(CloneMixin, ToolTest):
         return json.loads(out)
 
     def test_block_once_per_set_and_again_when_files_appear(self):
+        self.nothing_to_git()
         rc, out = self.stop()
         self.assertEqual((rc, out), (0, ""))  # nothing unsent
         self.make("results/run-1/a.csv", "a" * 2000)
@@ -548,10 +564,10 @@ class StopCheckTest(CloneMixin, ToolTest):
         d = self.decision(out)
         self.assertEqual(d["decision"], "block")
         reason = d["reason"]
-        self.assertIn("this cloud machine is thrown away after the session", reason)
-        self.assertIn("demo (%s): 3 files" % self.project, reason)
-        self.assertIn("  results/ (2 files, 3.9 KiB)", reason)  # a folder that holds only new files is one line
-        self.assertIn("  notes.md (2 B)", reason)
+        self.assertIn("This cloud machine is thrown away after the session", reason)
+        self.assertIn("demo (%s): 3 files for the box" % self.project, reason)
+        self.assertIn("  results/ (2 files, 3.9 KiB; large)", reason)  # a folder that holds only new files is one line
+        self.assertIn("  notes.md (2 B; large)", reason)
         self.assertIn('either send it: agent-mirror box send PATH --label NAME --note "what, why, what next"', reason)
         self.assertIn('or declare it disposable: agent-mirror box skip PATH... --reason "why it can go"', reason)
         self.assertIn("KEEP results that took real time or money to produce", reason)
@@ -567,7 +583,7 @@ class StopCheckTest(CloneMixin, ToolTest):
         # a new file: again, also when continuing from a stop hook
         self.make("figure.png", "p\n")
         rc, out = self.stop(active=True)
-        self.assertIn("figure.png (2 B)", self.decision(out)["reason"])
+        self.assertIn("figure.png (2 B; large)", self.decision(out)["reason"])
         self.assertEqual(self.stop(active=True), (0, ""))
         # the third block is the last one of a session
         self.make("third.txt")
@@ -582,7 +598,7 @@ class StopCheckTest(CloneMixin, ToolTest):
         self.assertEqual(self.decision(self.stop(session="sess-2")[1])["decision"], "block")
 
     def test_silent_off_cloud_and_on_bad_input_errors_and_timeouts(self):
-        self.make("results/new.csv")
+        self.make("results/new.log")
         self.assertEqual(self.stop(runtime="claude-local"), (0, ""))
         rc, out = self.run_tool("hook", "stop-check", stdin="{}", env={"CLAUDE_PROJECT_DIR": self.project})
         self.assertEqual((rc, out), (0, ""))  # unknown runtime
@@ -597,7 +613,7 @@ class StopCheckTest(CloneMixin, ToolTest):
         self.assertEqual(self.stop(session="sess-e"), (0, ""))
 
     def test_a_project_without_a_box_is_not_checked(self):
-        self.make("results/new.csv")
+        self.make("results/new.log")
         self.set_box(backend="none")
         self.assertEqual(self.stop(), (0, ""))
 

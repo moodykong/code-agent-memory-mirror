@@ -2,14 +2,15 @@
 
 The record lives in <project>/.agent-mirror/fetched.json. It is never
 committed: agent-mirror adds /.agent-mirror/ to the clone's own
-.git/info/exclude (not to the tracked .gitignore).
+.git/info/exclude (not to the tracked .gitignore). On a cloud runtime,
+`box send` and `box skip` add the paths they dealt with there too (unsent.py).
 """
 
 import json
 import os
 import shutil
 
-from agent_mirror.util import err, iso_now, norm, run, warn, within, write_text
+from agent_mirror.util import err, iso_now, local_path, norm, run, warn, within, write_text
 
 STATE_DIR = ".agent-mirror"
 RECORD = "fetched.json"
@@ -59,34 +60,67 @@ def disk_guard(path, need, reserve, force, free_fn=None, label="box.min_free_byt
     return False
 
 
-def ensure_git_exclude(project_path, folder):
-    """Add /<folder>/ (relative to the repo top) to the clone's .git/info/exclude. Never touches .gitignore."""
+def exclude_line(rel, is_dir):
+    """The line of a git exclude file that matches exactly one path relative to the repo top: anchored with a
+    leading slash, a trailing slash for a folder, and git's special characters escaped. None for a name a line
+    cannot hold (a line break)."""
+    if not rel or "\n" in rel or "\r" in rel:
+        return None
+    text = "".join("\\" + c if c in "\\*?[" else c for c in rel)
+    spaces = len(text) - len(text.rstrip(" "))
+    if spaces and not is_dir:
+        text = text[: len(text) - spaces] + "\\ " * spaces  # git drops unescaped trailing spaces
+    return "/" + text + ("/" if is_dir else "")
+
+
+def add_git_excludes(project_path, targets, comment="added by agent-mirror (local only)"):
+    """Add one anchored line per (path relative to the project folder, is a folder) to the clone's own
+    .git/info/exclude (never .gitignore, never committed). Lines already there are not added again.
+
+    Returns (the lines added, the exclude file's path), or ([], None) when this is not a git clone, git does not
+    answer, or a target is outside the repo or is its top."""
     rc, top, _ = run(["git", "-C", project_path, "rev-parse", "--show-toplevel"], timeout=10)
     if rc != 0 or not top.strip():
-        return False
+        return [], None
     top = os.path.realpath(top.strip())
-    target = os.path.realpath(folder)
-    if not within(target, top) or norm(target) == norm(top):
-        return False
+    root = os.path.realpath(project_path)
+    lines = []
+    for rel, is_dir in targets:
+        target = local_path(root, rel) if rel else root
+        if not within(target, top) or norm(target) == norm(top):
+            return [], None
+        line = exclude_line(os.path.relpath(target, top).replace(os.sep, "/"), is_dir)
+        if line is None:
+            return [], None
+        if line not in lines:
+            lines.append(line)
     rc, path, _ = run(["git", "-C", top, "rev-parse", "--git-path", "info/exclude"], timeout=10)
     if rc != 0 or not path.strip():
-        return False
+        return [], None
     path = path.strip()
     if not os.path.isabs(path):
         path = os.path.join(top, path)
-    line = "/" + os.path.relpath(target, top).replace(os.sep, "/") + "/"
     text = ""
     if os.path.isfile(path):
         with open(path, encoding="utf-8", errors="replace") as fh:
             text = fh.read()
-    if line in text.splitlines():
-        return True
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "a", encoding="utf-8") as fh:
-        if text and not text.endswith("\n"):
-            fh.write("\n")
-        fh.write("# added by agent-mirror (local only)\n%s\n" % line)
-    return True
+    have = set(text.splitlines())
+    new = [line for line in lines if line not in have]
+    if new:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as fh:
+            if text and not text.endswith("\n"):
+                fh.write("\n")
+            fh.write("# %s\n%s\n" % (comment, "\n".join(new)))
+    return new, path
+
+
+def ensure_git_exclude(project_path, folder):
+    """Add /<folder>/ (relative to the repo top) to the clone's .git/info/exclude. Never touches .gitignore."""
+    rel = os.path.relpath(os.path.realpath(folder), os.path.realpath(project_path)).replace(os.sep, "/")
+    if rel == "." or rel == ".." or rel.startswith("../"):
+        return False
+    return add_git_excludes(project_path, [(rel, True)])[1] is not None
 
 
 class FetchRecord:

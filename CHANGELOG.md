@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.5.7
+
+The stop check no longer fights the vendor's own stop hook. On Claude Code on the web, the vendor's hook asks the
+session to commit and push untracked files; for a small new file both hooks asked at once. Now small files that git
+can hold are left to git (the vendor's hook asks for them, and the session commits them as usual), and the stop check
+here asks only about files that do not belong in git: large or binary outputs, many small result files, and
+anything in a git-ignored folder, which it asks to send to the box or skip.
+
+- **Two classes in `box unsent`.** Every unsent file is either for the box (ignored by git, any size; or untracked
+  and above `box.git_text_max_bytes`, default 1 MiB; or binary, a NUL byte in its first 8 KiB, and above
+  `box.git_binary_max_bytes`, default 100 KiB; or one of the small untracked files of a top-level folder whose
+  small untracked files together exceed `box.git_total_max_bytes`, default 20 MiB, shown as one folder line) or
+  left to git (every other untracked file). Outside a git repo every file is for the box, as before. The three
+  keys are new and optional (whole numbers of bytes, 0 or more; 0 leaves nothing to git under its rule; a bad
+  value is a warning and its default is used). The binary test reads 8 KiB only of files between the two limits,
+  so the walk stays as fast as before.
+- **The listing.** `box unsent` lists the files for the box, each line with a short reason where it helps
+  (`ignored by git`, `large`, `binary`, `many small files`), then one line for the rest:
+  `left to git: 3 small untracked files, 41.2 KiB (commit them; --all lists them)`. The new `--all` lists those
+  too, in their own block. `--json` gives each path and entry its `class` (`for_the_box` or `left_to_git`) and
+  reason, both totals (`for_the_box`, `left_to_git`; `files` and `bytes` still count both), `limits` and
+  `in_git`. `--check` exits 3 only when something is for the box (or the check could not finish).
+- **The stop check** blocks only on files for the box, and its "never twice for the same set" memory counts
+  only those: a change among the files left to git never makes it block again. Its reason starts with a fixed
+  line, `agent-mirror 0.5.7 stop check (Claude Code Stop hook: agent-mirror hook stop-check)`, names only the
+  files for the box, and says in one line that small untracked files are left to git and that committing a
+  listed file is not the remedy: send it or skip it.
+- **The stop check's log.** Every run on a cloud runtime adds one line to `<cache>/stop-check.log` (the time, the
+  version, the session id, the decision `block`, `pass` or `error`, the counts of files for the box and left to
+  git, the outcome; never a file name), keeping the newest 200. `probe` and `probe --full` print the last five
+  and whether the Stop hook is installed (and expected on this runtime), so a test on a real machine can tell
+  which hook asked what.
+- **Out of the vendor's sight once dealt with.** On a cloud runtime, `box send` adds what it sent and what is for
+  the box to the clone's local git exclude file (`.git/info/exclude`, never `.gitignore`, never committed): the
+  path when all of it is for the box, else only its files that are (a small sent file may still be committed,
+  so it stays visible). `box skip` adds every untracked path it declares disposable. Each line is anchored to
+  the exact path (a leading slash, a trailing slash for a folder, git's special characters escaped), never
+  added twice, and the command prints one line saying so. The sent and skipped records keep those files out
+  of `box unsent`; a sent file that changes comes back as ignored by git. Developer machines never touch the
+  file. This relies on an assumption that is UNVERIFIED: that the vendor's hook looks at untracked files as
+  `git status` reports them.
+- **The suggested rule** in the template `AGENTS.md`, the README and the docs: small new files that belong in
+  git are committed as usual; large or binary outputs and anything in a git-ignored output folder go to the box
+  with a note, or are skipped with a reason; `box unsent` shows which is which. A store still holding the
+  template of 0.5.6 is still recognised as the template by `plan`.
+
+Compatibility: only optional keys are new (`box.git_text_max_bytes`, `box.git_binary_max_bytes`,
+`box.git_total_max_bytes`, and new keys in `box unsent --json`); the records of 0.5.2 to 0.5.6 are read and
+written as before. The transfer calls of every box command are unchanged. On a developer machine only the output
+of `box unsent` changes.
+
 ## 0.5.6
 
 Files a cloud session made are no longer lost by being forgotten: the program detects them, the agent judges
